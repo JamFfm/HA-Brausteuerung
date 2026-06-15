@@ -1,0 +1,80 @@
+# =============================================================================
+# Brausteuerung — Home Assistant Konfiguration (Helfer)
+# =============================================================================
+# Diese Einträge in deine bestehende configuration.yaml einfügen.
+# Wenn du bereits input_text-, input_select-, input_number- oder timer-Abschnitte
+# hast, füge die jeweiligen Einträge dort hinzu (Domänenschlüssel nicht doppeln).
+#
+# Die Helfer sind die alleinige Schnittstelle zwischen Custom Card und
+# Automationen (Single Source of Truth, siehe design.md "Data Models").
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# input_text — Rezept-JSON und konfigurierte Entitäten (max. 255 Zeichen)
+# -----------------------------------------------------------------------------
+input_text:
+  brau_rezept_json:
+    name: Brau Rezept JSON
+    max: 255
+    initial: "[]"
+
+  brau_sensor_entity:
+    name: Brau Sensor Entity
+    max: 255
+    initial: ""
+
+  brau_heater_entity:
+    name: Brau Heater Entity
+    max: 255
+    initial: ""
+
+# -----------------------------------------------------------------------------
+# input_select — Betriebszustand der Brausteuerung
+# -----------------------------------------------------------------------------
+input_select:
+  brau_status:
+    name: Brau Status
+    options:
+      - idle
+      - running
+      - paused
+      - done
+    initial: idle
+
+# -----------------------------------------------------------------------------
+# input_number — aktive Stufe, Solltemperatur und Sicherheits-Offset
+# -----------------------------------------------------------------------------
+input_number:
+  brau_aktuelle_stufe:
+    name: Aktuelle Raststufe
+    min: 0
+    max: 20
+    step: 1
+    initial: 0
+    mode: box
+
+  brau_solltemperatur:
+    name: Brau Solltemperatur
+    min: 0
+    max: 100
+    step: 0.5
+    initial: 0
+    unit_of_measurement: "°C"
+    mode: box
+
+  brau_sicherheits_offset:
+    name: Brau Sicherheits-Offset
+    min: 0
+    max: 20
+    step: 0.5
+    initial: 5
+    unit_of_measurement: "°C"
+    mode: box
+
+# -----------------------------------------------------------------------------
+# timer — Haltezeit-Timer der aktiven Raststufe
+# -----------------------------------------------------------------------------
+timer:
+  brau_raststufe:
+    name: Rast-Timer
+    duration: "00:00:00"
