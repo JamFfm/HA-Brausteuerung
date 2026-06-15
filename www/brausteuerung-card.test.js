@@ -40,6 +40,7 @@ const ENTITY = Object.freeze({
   CURRENT_STEP: "input_number.brau_aktuelle_stufe",
   SETPOINT: "input_number.brau_solltemperatur",
   SAFETY_OFFSET: "input_number.brau_sicherheits_offset",
+  HYSTERESIS: "input_number.brau_hysterese",
   TIMER: "timer.brau_raststufe",
   AUTOMATION_RASTSTUFE: "automation.brausteuerung_raststufe",
   AUTOMATION_MANUELLER_WECHSEL: "automation.brausteuerung_manueller_wechsel",
@@ -433,10 +434,10 @@ describe("render() — Button-Zustände", () => {
 
     const out = card.render()._html;
     expect(out).toContain("▶ Start");
-    // Bei aktivem Button trägt das title-Attribut den Start-Hinweis und der
-    // ?disabled-Wert ist falsy (rendert als leer, nicht als "true").
+    // Der aktive Start-Button trägt den Start-Hinweis als title; der
+    // disabled-Hinweis darf NICHT erscheinen (der Button ist nicht gesperrt).
     expect(out).toContain("Brauprozess starten");
-    expect(out).not.toContain("?disabled=true");
+    expect(out).not.toContain("Start benötigt mindestens eine Rast");
   });
 
   it("deaktiviert den Start-Button bei leerem Rezept", () => {
@@ -489,5 +490,239 @@ describe("render() — datalist-Verhalten im Settings-Panel (Req 6.3, 7.3)", () 
     // (Die <option>-Werte sind im Template unquoted: value=${id}.)
     expect(out).toContain("value=sensor.kessel");
     expect(out).toContain("value=switch.pumpe");
+  });
+});
+
+// =============================================================================
+// 10. Umsortieren der Raststufen: _moveStep (Req 3.7, 3.8)
+// =============================================================================
+describe("_moveStep() — Reihenfolge ändern und persistieren (Req 3.7, 3.8)", () => {
+  const dreiRasten = JSON.stringify([
+    { name: "A", temperature: 50, duration: 10 },
+    { name: "B", temperature: 60, duration: 20 },
+    { name: "C", temperature: 70, duration: 30 },
+  ]);
+
+  it("verschiebt eine Rast nach unten und persistiert die neue Reihenfolge", () => {
+    const card = makeCard();
+    const hass = makeHass({ [ENTITY.RECIPE_JSON]: { state: dreiRasten } });
+    card.hass = hass;
+
+    card._moveStep(0, 1); // A nach unten -> B, A, C
+
+    const call = findCall(hass.callService, "input_text", "set_value", {
+      entity_id: ENTITY.RECIPE_JSON,
+    });
+    expect(call).toBeTruthy();
+    const persisted = JSON.parse(call[2].value);
+    expect(persisted.map((s) => s.name)).toEqual(["B", "A", "C"]);
+  });
+
+  it("verschiebt eine Rast nach oben und persistiert die neue Reihenfolge", () => {
+    const card = makeCard();
+    const hass = makeHass({ [ENTITY.RECIPE_JSON]: { state: dreiRasten } });
+    card.hass = hass;
+
+    card._moveStep(2, -1); // C nach oben -> A, C, B
+
+    const call = findCall(hass.callService, "input_text", "set_value", {
+      entity_id: ENTITY.RECIPE_JSON,
+    });
+    const persisted = JSON.parse(call[2].value);
+    expect(persisted.map((s) => s.name)).toEqual(["A", "C", "B"]);
+  });
+
+  it("persistiert nichts an den Listengrenzen (erste Rast nach oben)", () => {
+    const card = makeCard();
+    const hass = makeHass({ [ENTITY.RECIPE_JSON]: { state: dreiRasten } });
+    card.hass = hass;
+
+    card._moveStep(0, -1);
+
+    expect(findCall(hass.callService, "input_text", "set_value")).toBeFalsy();
+  });
+
+  it("verschiebt NICHT während eines laufenden Prozesses (Req 3.8)", () => {
+    const card = makeCard();
+    const hass = makeHass({
+      [ENTITY.RECIPE_JSON]: { state: dreiRasten },
+      [ENTITY.STATUS]: { state: "running" },
+    });
+    card.hass = hass;
+
+    card._moveStep(0, 1);
+
+    expect(findCall(hass.callService, "input_text", "set_value")).toBeFalsy();
+  });
+});
+
+// =============================================================================
+// 11. Manuelles Schalten des Heizungs-Aktors: _toggleHeater (Req 5.8)
+// =============================================================================
+describe("_toggleHeater() — manuelles Schalten (Req 5.8)", () => {
+  it("ruft switch.turn_on auf, wenn der Aktor aktuell aus ist", () => {
+    const card = makeCard();
+    const hass = makeHass({ "switch.brau_heizung": { state: "off" } });
+    card.hass = hass;
+
+    card._toggleHeater();
+
+    expect(
+      findCall(hass.callService, "switch", "turn_on", {
+        entity_id: "switch.brau_heizung",
+      })
+    ).toBeTruthy();
+  });
+
+  it("ruft switch.turn_off auf, wenn der Aktor aktuell an ist", () => {
+    const card = makeCard();
+    const hass = makeHass({ "switch.brau_heizung": { state: "on" } });
+    card.hass = hass;
+
+    card._toggleHeater();
+
+    expect(
+      findCall(hass.callService, "switch", "turn_off", {
+        entity_id: "switch.brau_heizung",
+      })
+    ).toBeTruthy();
+  });
+
+  it("schaltet nicht und meldet einen Fehler, wenn kein Heizungs-Aktor konfiguriert ist", () => {
+    const card = makeCard();
+    const hass = makeHass({ [ENTITY.HEATER_ENTITY]: { state: "" } });
+    card.hass = hass;
+    // Fallback-Defaults ebenfalls leer halten.
+    card._heaterEntity = "";
+    card._config = {};
+
+    card._toggleHeater();
+
+    expect(findCall(hass.callService, "switch", "turn_on")).toBeFalsy();
+    expect(findCall(hass.callService, "switch", "turn_off")).toBeFalsy();
+    expect(card._errorMessage).not.toBe("");
+  });
+});
+
+// =============================================================================
+// 12. Render-Tests: Heizungs-Zustand und Flammensymbol (Req 5.6, 5.7)
+// =============================================================================
+describe("render() — Heizungs-Zustand und Flammensymbol (Req 5.6, 5.7)", () => {
+  it("zeigt 'AN' und das Flammensymbol, wenn der Heizungs-Aktor eingeschaltet ist (Req 5.7)", () => {
+    const card = makeCard();
+    card.hass = makeHass({ "switch.brau_heizung": { state: "on" } });
+
+    const out = card.render()._html;
+    expect(out).toContain("🔥");
+    expect(out).toContain("AN");
+  });
+
+  it("zeigt 'AUS' ohne Flammensymbol, wenn der Heizungs-Aktor ausgeschaltet ist (Req 5.6)", () => {
+    const card = makeCard();
+    card.hass = makeHass({ "switch.brau_heizung": { state: "off" } });
+
+    const out = card.render()._html;
+    expect(out).toContain("AUS");
+    expect(out).not.toContain("🔥");
+  });
+});
+
+// =============================================================================
+// 13. Render-Tests: Echtzeit-Countdown der Haltezeit (Req 4.7)
+// =============================================================================
+describe("render() — Echtzeit-Countdown der Haltezeit (Req 4.7)", () => {
+  it("zeigt die verbleibende Haltezeit sekundengenau bei laufendem Timer", () => {
+    const card = makeCard();
+    // Timer aktiv, endet in 90 Sekunden -> 01:30
+    const finishesAt = new Date(Date.now() + 90_000).toISOString();
+    card.hass = makeHass({
+      [ENTITY.STATUS]: { state: "running" },
+      [ENTITY.TIMER]: { state: "active", attributes: { finishes_at: finishesAt } },
+    });
+
+    const out = card.render()._html;
+    expect(out).toContain("Verbleibende Haltezeit");
+    expect(out).toContain("01:30");
+  });
+
+  it("zeigt keinen Countdown, wenn kein Timer aktiv ist", () => {
+    const card = makeCard();
+    card.hass = makeHass({ [ENTITY.TIMER]: { state: "idle" } });
+
+    const out = card.render()._html;
+    expect(out).not.toContain("Verbleibende Haltezeit");
+  });
+});
+
+// =============================================================================
+// 14. Hystereseband: _saveHysteresis (Req 4.9)
+// =============================================================================
+describe("_saveHysteresis() — Hystereseband speichern (Req 4.9)", () => {
+  it("persistiert einen gültigen Wert (0 < v <= 5) nach input_number.brau_hysterese", () => {
+    const card = makeCard();
+    const hass = makeHass();
+    card.hass = hass;
+
+    const ok = card._saveHysteresis(2.5);
+
+    expect(ok).toBe(true);
+    expect(
+      findCall(hass.callService, "input_number", "set_value", {
+        entity_id: ENTITY.HYSTERESIS,
+        value: 2.5,
+      })
+    ).toBeTruthy();
+  });
+
+  it("akzeptiert auch eine String-Eingabe (wie aus dem Eingabefeld)", () => {
+    const card = makeCard();
+    const hass = makeHass();
+    card.hass = hass;
+
+    const ok = card._saveHysteresis("1.5");
+
+    expect(ok).toBe(true);
+    expect(
+      findCall(hass.callService, "input_number", "set_value", {
+        entity_id: ENTITY.HYSTERESIS,
+        value: 1.5,
+      })
+    ).toBeTruthy();
+  });
+
+  it("persistiert NICHT bei ungültigem Wert (<= 0 oder > 5) und meldet einen Fehler", () => {
+    const card = makeCard();
+    const hass = makeHass();
+    card.hass = hass;
+
+    expect(card._saveHysteresis(0)).toBe(false);
+    expect(card._saveHysteresis(6)).toBe(false);
+    expect(card._saveHysteresis("abc")).toBe(false);
+
+    expect(findCall(hass.callService, "input_number", "set_value", {
+      entity_id: ENTITY.HYSTERESIS,
+    })).toBeFalsy();
+    expect(card._errorMessage).not.toBe("");
+  });
+});
+
+// =============================================================================
+// 15. Render-Tests: Anzeige des Hysteresebandes (Req 4.10)
+// =============================================================================
+describe("render() — Anzeige des Hysteresebandes (Req 4.10)", () => {
+  it("zeigt das konfigurierte Hystereseband an", () => {
+    const card = makeCard();
+    card.hass = makeHass({ [ENTITY.HYSTERESIS]: { state: "2.0" } });
+
+    const out = card.render()._html;
+    expect(out).toContain("Hysterese: 2 °C");
+  });
+
+  it("zeigt den Default 1 °C an, wenn kein gültiger Helferwert vorliegt", () => {
+    const card = makeCard();
+    card.hass = makeHass({ [ENTITY.HYSTERESIS]: { state: "unknown" } });
+
+    const out = card.render()._html;
+    expect(out).toContain("Hysterese: 1 °C");
   });
 });

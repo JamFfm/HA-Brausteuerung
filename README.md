@@ -1,6 +1,3 @@
-# Under Construction, not running jet
-#
-#
 # 🍺 Brausteuerung für Home Assistant
 
 Die Brausteuerung ist eine auf Home Assistant basierende Sudhaus-/Maischesteuerung
@@ -112,6 +109,7 @@ Folgende Helfer werden angelegt:
 | `brau_aktuelle_stufe` | `input_number` | Index der aktiven Raststufe (0–20). |
 | `brau_solltemperatur` | `input_number` | Aktive Solltemperatur in °C (0–100). |
 | `brau_sicherheits_offset` | `input_number` | Sicherheits-Offset über der Solltemperatur in °C (0–20, **Default 5**). |
+| `brau_hysterese` | `input_number` | Konfigurierbares Hystereseband unterhalb der Solltemperatur in °C (0,1–5, **Default 1,0**). |
 | `brau_raststufe` | `timer` | Haltezeit-Timer der aktiven Raststufe. |
 
 Anschließend **Konfiguration prüfen und neu laden** bzw. Home Assistant neu
@@ -148,6 +146,27 @@ Konfiguriere danach über das ⚙️-Symbol auf der Karte die Entitäten:
 
 ---
 
+## Updates
+
+Bei der Installation eines Updates der HA-Brausteuerung (neue Version von
+`brausteuerung-card.js` bzw. `brausteuerung-logic.js`) muss anschließend der
+**Browser-Cache** geleert werden, da der Browser die alten Dateien sonst aus dem
+Zwischenspeicher lädt und das Update nicht sichtbar wird.
+
+Beispiel für **Microsoft Edge**:
+
+1. Auf **„…"** (Einstellungen und mehr) klicken.
+2. **„Browserdaten werden gelöscht"** anklicken.
+3. Im erscheinenden Fenster **nur „Zwischengespeicherte Bilder und Dateien"**
+   auswählen.
+4. Auf **„Jetzt löschen"** klicken.
+
+Danach das Dashboard neu laden. In anderen Browsern (Chrome, Firefox, Safari)
+funktioniert das Leeren des Bilder-/Datei-Caches analog; alternativ hilft oft ein
+„hartes" Neuladen der Seite (z. B. `Strg`+`F5` bzw. `Cmd`+`Shift`+`R`).
+
+---
+
 ## Bedienung
 
 ### Rezept / Raststufen anlegen
@@ -163,8 +182,10 @@ Ungültige Eingaben (Solltemperatur außerhalb 0–100 °C, Haltezeit ≤ 0 oder
 ganze Zahl) werden **nicht** übernommen; das Rezept bleibt unverändert.
 
 Raststufen können vor dem Start über **✎** editiert und über **✕** gelöscht werden.
-Die Reihenfolge der Rasten bleibt dabei erhalten und entspricht der
-Abarbeitungsreihenfolge.
+Über die Pfeiltasten **▲ / ▼** lässt sich die Reihenfolge der Rasten vor dem Start
+beliebig ändern; die neue Reihenfolge wird sofort gespeichert. Abgearbeitet werden
+die Rasten in genau der Reihenfolge, die beim Drücken von **▶ Start** vorliegt.
+Während eines laufenden Prozesses sind Editieren, Löschen und Umsortieren gesperrt.
 
 > **255-Zeichen-Grenze:** Das Rezept wird als JSON-String im Helfer
 > `input_text.brau_rezept_json` gespeichert. `input_text` ist auf **255 Zeichen**
@@ -183,19 +204,38 @@ Abarbeitungsreihenfolge.
   springt zur nächsten Rast. Auf der letzten Rast wird damit der Brauprozess
   abgeschlossen (Heizung aus, Status `done`, Benachrichtigung).
 
+Während eines laufenden Prozesses zeigt die Karte zusätzlich die **verbleibende
+Haltezeit** der aktiven Rast als sekundengenauen Echtzeit-Countdown an.
+
+### Heizungs-Aktor: Anzeige und manuelles Schalten
+
+Sobald ein gültiger Heizungs-Aktor (Domäne `switch.*`) ausgewählt ist, zeigt die
+Karte dessen Zustand in Echtzeit neben der Ist-Temperatur an. Ist der Aktor
+eingeschaltet, erscheint zusätzlich ein farbiges **🔥 Flammensymbol**.
+
+Der Zustand lässt sich jederzeit über die Anzeige manuell umschalten (AN/AUS).
+**Hinweis:** Während eines laufenden Brauprozesses kann die Hysterese-Regelung den
+manuell gesetzten Zustand jederzeit gemäß Regelung wieder überschreiben.
+
 ---
 
 ## Regelung & Sicherheit
 
-### Hysterese-Band (1,0 °C)
+### Hysterese-Band (konfigurierbar, Default 1,0 °C)
 
 Während der Haltephase regelt die Steuerung die Ist-Temperatur mit einem
-Hystereseband von **1,0 °C** unterhalb der Solltemperatur:
+konfigurierbaren Hystereseband unterhalb der Solltemperatur:
 
-- Ist-Temperatur **< Soll − 1,0 °C** → Heizung **AN**
+- Ist-Temperatur **< Soll − Hysterese** → Heizung **AN**
 - Ist-Temperatur **≥ Soll** → Heizung **AUS**
-- Ist-Temperatur **im Band** (Soll − 1,0 °C ≤ Ist < Soll) → Zustand bleibt
+- Ist-Temperatur **im Band** (Soll − Hysterese ≤ Ist < Soll) → Zustand bleibt
   unverändert
+
+Das Hystereseband lässt sich über die Card (⚙️-Einstellungen) einstellen. Gültig
+sind Werte **größer als 0 °C bis maximal 5 °C**; der Standardwert ist **1,0 °C**.
+Der Wert wird im Helfer `input_number.brau_hysterese` persistent gespeichert und
+das aktuell geltende Band wird auf der Karte angezeigt. Bei fehlendem oder
+ungültigem Wert verwendet die Steuerung den Default von 1,0 °C.
 
 ### Sicherheits-Offset und Übertemperaturschutz
 
@@ -217,9 +257,10 @@ bewusste Benutzeraktion.
 
 Liefert die konfigurierte Sensor-Entität während eines laufenden Prozesses
 (`running`) für eine definierte Dauer den Wert `unavailable` oder `unknown`,
-schaltet die Automation `brausteuerung_komm_verlust` die Heizung aus und erzeugt
-eine Benachrichtigung. So wird unkontrolliertes Aufheizen ohne gültigen Messwert
-verhindert.
+schaltet die Automation `brausteuerung_komm_verlust` die Heizung aus, setzt den
+Status auf `paused` und erzeugt eine Benachrichtigung. So wird der Brauprozess
+angehalten, statt mit ungültigen Sensordaten weiterzuregeln, und unkontrolliertes
+Aufheizen ohne gültigen Messwert verhindert.
 
 Die Toleranzdauer ist über die Konstante **`KOMM_VERLUST_DAUER` (Default 30 s)**
 festgelegt. Kurze Aussetzer lösen also nicht aus. Soll die Dauer angepasst werden,

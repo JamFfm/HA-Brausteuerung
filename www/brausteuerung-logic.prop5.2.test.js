@@ -66,9 +66,16 @@ describe('Property 7: Hysterese-Schaltlogik ist korrekt und monoton', () => {
   // Teil 3: soll - 1.0 <= ist < soll ⇒ Entscheidung = vorheriger Zustand (unverändert).
   it('bleibt unverändert (== prevState), wenn soll - HYSTERESIS_BAND <= ist < soll', () => {
     fc.assert(
-      // f in [0, 1): ist = soll - HYSTERESIS_BAND * f liegt in [soll - 1.0, soll).
-      fc.property(sollGen, fc.double({ min: 0, max: 1, noNaN: true }).filter((f) => f < 1), prevStateGen, (soll, f, prevState) => {
+      // f in (0, 1]: ist = soll - HYSTERESIS_BAND * f liegt in [soll - 1.0, soll).
+      // f = 0 ist ausgeschlossen, da ist = soll dann zur Grenze "ist >= soll ⇒ AUS"
+      // gehört (siehe Teil 2) und nicht zum "unverändert"-Band.
+      fc.property(sollGen, fc.double({ min: 0, max: 1, noNaN: true }).filter((f) => f > 0 && f <= 1), prevStateGen, (soll, f, prevState) => {
         const ist = soll - HYSTERESIS_BAND * f;
+        // Gleitkomma-Schutz: Bei extремen (subnormalen) `soll`-Werten kann
+        // `soll - HYSTERESIS_BAND * f` auf `soll` zurückrunden und damit aus dem
+        // offenen Band [soll - 1.0, soll) fallen. Nur tatsächlich im Band
+        // liegende Werte prüfen (sonst greift Teil 1/2).
+        fc.pre(ist >= soll - HYSTERESIS_BAND && ist < soll);
         expect(hysteresisDecision(ist, soll, prevState)).toBe(prevState);
       }),
       { numRuns: 100 }

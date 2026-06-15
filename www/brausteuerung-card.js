@@ -31,7 +31,10 @@ import {
   canPersistRecipe,
   isValidRaststufe,
   resolveStepName,
+  reorderStep,
   isSensorValid,
+  isValidHysteresis,
+  resolveHysteresis,
   canStart,
   computeSafetyThreshold,
   shouldUpdateDecision,
@@ -54,6 +57,7 @@ const ENTITY = Object.freeze({
   CURRENT_STEP: "input_number.brau_aktuelle_stufe",
   SETPOINT: "input_number.brau_solltemperatur",
   SAFETY_OFFSET: "input_number.brau_sicherheits_offset",
+  HYSTERESIS: "input_number.brau_hysterese",
   TIMER: "timer.brau_raststufe",
   // Automationen, die von der Card per `automation.trigger` ausgelöst werden.
   AUTOMATION_RASTSTUFE: "automation.brausteuerung_raststufe",
@@ -105,6 +109,51 @@ class BrausteuerungCard extends LitElement {
 
   static getStubConfig() {
     return { sensor_entity: "", heater_entity: "" };
+  }
+
+  // =========================================================================
+  // Lifecycle — Echtzeit-Countdown-Tick (Req 4.7)
+  // =========================================================================
+
+  /**
+   * Startet beim Einhängen der Card den 1-Sekunden-Intervall-Tick, der die
+   * Countdown-Anzeige der verbleibenden Haltezeit sekundengenau aktualisiert.
+   */
+  connectedCallback() {
+    super.connectedCallback();
+    this._startCountdownTick();
+  }
+
+  /** Räumt den Intervall-Tick beim Aushängen der Card auf (Req 4.7). */
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._stopCountdownTick();
+  }
+
+  /**
+   * Startet den Sekunden-Tick (idempotent). Da `_remainingHoldSeconds` aus
+   * `finishes_at - now` berechnet wird, genügt ein lokaler Re-Render pro
+   * Sekunde, um den Countdown laufen zu lassen — ohne auf `hass`-Updates zu
+   * warten. Der Tick erzwingt ein Re-Render nur, wenn gerade ein Timer läuft
+   * und weder Settings-Panel offen noch eine Rast in Bearbeitung ist (damit
+   * aktive Eingabefelder erhalten bleiben, Req 7.1/7.2).
+   */
+  _startCountdownTick() {
+    if (this._countdownTimer) return;
+    this._countdownTimer = setInterval(() => {
+      if (this._showSettings || this._editIndex >= 0) return;
+      if (this._remainingHoldSeconds !== null) {
+        this.requestUpdate();
+      }
+    }, 1000);
+  }
+
+  /** Stoppt und verwirft den Sekunden-Tick. */
+  _stopCountdownTick() {
+    if (this._countdownTimer) {
+      clearInterval(this._countdownTimer);
+      this._countdownTimer = null;
+    }
   }
 
   // =========================================================================
@@ -190,6 +239,65 @@ class BrausteuerungCard extends LitElement {
     const soll = Number(this.hass?.states[ENTITY.SETPOINT]?.state);
     const offset = Number(this.hass?.states[ENTITY.SAFETY_OFFSET]?.state);
     return computeSafetyThreshold(soll, offset);
+  }
+
+  /**
+   * Aktuell geltendes Hystereseband in °C (Req 4.9, 4.10).
+   *
+   * Liest den Wert aus `input_number.brau_hysterese`. Bei fehlendem,
+   * nicht-numerischem oder außerhalb des gültigen Bereichs (`0 < v <= 5`)
+   * liegendem Wert wird der Default 1,0 °C verwendet (`resolveHysteresis`).
+   * @returns {number} Hystereseband in °C.
+   */
+  get _hysteresis() {
+    return resolveHysteresis(this.hass?.states[ENTITY.HYSTERESIS]?.state);
+  }
+
+  /**
+   * State-Objekt des konfigurierten Heizungs-Aktors (oder `null`).
+   * @returns {Object|null} HA-State-Objekt des Heizungs-Aktors.
+   */
+  get _heaterState() {
+    const heater = this._configuredHeater;
+    if (!this.hass || !heater) return null;
+    return this.hass.states[heater] ?? null;
+  }
+
+  /**
+   * Echtzeit-Zustand des Heizungs-Aktors (Req 5.6, 5.7).
+   * @returns {boolean} `true`, wenn der Aktor eingeschaltet ist.
+   */
+  get _isHeaterOn() {
+    return this._heaterState?.state === "on";
+  }
+
+  /**
+   * Verbleibende Haltezeit der aktiven Raststufe in Sekunden (Req 4.7).
+   *
+   * Quelle ist die HA-`timer`-Entität `timer.brau_raststufe`. Bei laufendem
+   * Timer (`active`) liefert das Attribut `finishes_at` den Endzeitpunkt; die
+   * Restzeit wird daraus relativ zur aktuellen Uhrzeit berechnet, sodass die
+   * Anzeige sekundengenau (über den eigenen Intervall-Tick) herunterzählt.
+   * Liegt kein laufender Timer vor oder fehlt `finishes_at`, wird `null`
+   * zurückgegeben (keine Countdown-Anzeige).
+   *
+   * @returns {number|null} Verbleibende Sekunden (>= 0) oder `null`.
+   */
+  get _remainingHoldSeconds() {
+    const timer = this.hass?.states[ENTITY.TIMER];
+    if (!timer || timer.state !== "active") {
+      return null;
+    }
+    const finishesAt = timer.attributes?.finishes_at;
+    if (!finishesAt) {
+      return null;
+    }
+    const finishMs = Date.parse(finishesAt);
+    if (Number.isNaN(finishMs)) {
+      return null;
+    }
+    const remainingMs = finishMs - Date.now();
+    return Math.max(0, Math.round(remainingMs / 1000));
   }
 
   // =========================================================================
@@ -383,6 +491,29 @@ class BrausteuerungCard extends LitElement {
     this._persistRecipe([]);
   }
 
+  /**
+   * Verschiebt die Rast an Position `i` in der Reihenfolge nach oben oder unten
+   * (Req 3.7) und persistiert die neue Reihenfolge. Während eines laufenden
+   * Prozesses ist das Umsortieren gesperrt (Req 3.8 — die Abarbeitung folgt der
+   * zum Startzeitpunkt vorliegenden Reihenfolge).
+   *
+   * @param {number} i        Index der zu verschiebenden Rast.
+   * @param {-1|1} direction  `-1` = nach oben, `+1` = nach unten.
+   */
+  _moveStep(i, direction) {
+    if (this._status === Status.RUNNING) {
+      return;
+    }
+    const current = this._recipe;
+    const newRecipe = reorderStep(current, i, direction);
+    // Keine Änderung (z. B. an den Listengrenzen): nichts persistieren.
+    // reorderStep liefert in diesem Fall dieselbe Referenz wie die Eingabe.
+    if (newRecipe === current) {
+      return;
+    }
+    this._persistRecipe(newRecipe);
+  }
+
   /** Schaltet die Sichtbarkeit des Settings-Panels um (Req 5.1, 6.1). */
   _toggleSettings() {
     this._showSettings = !this._showSettings;
@@ -452,6 +583,60 @@ class BrausteuerungCard extends LitElement {
     });
   }
 
+  /**
+   * Schaltet den konfigurierten Heizungs-Aktor manuell um (Req 5.8): ist er
+   * aktuell aus, wird `switch.turn_on` aufgerufen, sonst `switch.turn_off`.
+   *
+   * Es gibt bewusst KEINEN Konflikt-Lock: Während eines laufenden Brauprozesses
+   * darf die Hysterese-Regelung der Automation den manuell gesetzten Zustand
+   * gemäß Regelung wieder überschreiben (Req 5.9). Bei Fehlschlag des
+   * Service-Aufrufs wird ein Hinweis angezeigt; der reale Zustand wird weiter
+   * aus dem `hass`-State gelesen, sodass keine Anzeige-Diskrepanz entsteht.
+   */
+  _toggleHeater() {
+    if (!this.hass) return;
+    const heater = this._configuredHeater;
+    if (!heater) {
+      this._setError("Kein Heizungs-Aktor gesetzt.");
+      return;
+    }
+    const service = this._isHeaterOn ? "turn_off" : "turn_on";
+    try {
+      this.hass.callService("switch", service, { entity_id: heater });
+    } catch (err) {
+      this._setError("Schalten des Heizungs-Aktors fehlgeschlagen.");
+    }
+  }
+
+  /**
+   * Speichert das in der Card eingestellte Hystereseband (Req 4.9).
+   *
+   * Akzeptiert nur gültige Werte (`0 < v <= 5` °C, geprüft über
+   * `isValidHysteresis`) und persistiert sie über `input_number.set_value`
+   * nach `input_number.brau_hysterese`. Ungültige Eingaben werden abgelehnt;
+   * der zuletzt gespeicherte Wert bleibt unverändert und es wird ein
+   * Fehlerhinweis angezeigt.
+   *
+   * @param {number|string} value Eingegebenes Hystereseband in °C.
+   * @returns {boolean} `true`, wenn persistiert wurde; sonst `false`.
+   */
+  _saveHysteresis(value) {
+    if (!this.hass) return false;
+    const num = typeof value === "string" ? Number(value) : value;
+    if (!isValidHysteresis(num)) {
+      this._setError(
+        "Ungültige Hysterese: bitte einen Wert größer als 0 °C bis maximal 5 °C eingeben."
+      );
+      return false;
+    }
+    this._errorMessage = "";
+    this.hass.callService("input_number", "set_value", {
+      entity_id: ENTITY.HYSTERESIS,
+      value: num,
+    });
+    return true;
+  }
+
   // =========================================================================
   // Persistenzschutz der Entitätsauswahl (Req 5.3) — Task 8.4
   // =========================================================================
@@ -468,6 +653,12 @@ class BrausteuerungCard extends LitElement {
   _saveSettings() {
     const sensor = this._q("#settings-sensor")?.value ?? "";
     const heater = this._q("#settings-heater")?.value ?? "";
+    const hyst = this._q("#settings-hysteresis")?.value ?? "";
+    // Hysterese zuerst validieren: bei ungültiger Eingabe Panel offen lassen
+    // und einen Fehlerhinweis anzeigen, ohne die Entitäten zu speichern.
+    if (hyst !== "" && !this._saveHysteresis(hyst)) {
+      return;
+    }
     // Lokal halten als Single Source of Truth, bis die Persistenz gelingt.
     this._sensorEntity = sensor;
     this._heaterEntity = heater;
@@ -586,6 +777,39 @@ class BrausteuerungCard extends LitElement {
         letter-spacing: 0.03em;
         background: var(--secondary-background-color, #f0f0f0);
         color: var(--secondary-text-color);
+      }
+      .status-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .heater-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 0.8em;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--secondary-background-color, #f0f0f0);
+        color: var(--secondary-text-color);
+      }
+      .heater-toggle.on {
+        background: var(--error-color, #e74c3c);
+        color: #fff;
+        border-color: var(--error-color, #e74c3c);
+      }
+      .heater-toggle .flame {
+        filter: none;
+      }
+      .status-countdown {
+        font-size: 0.95em;
+        font-weight: 600;
+        color: var(--primary-color, #03a9f4);
+        margin-bottom: 8px;
       }
       .status-badge.status-running {
         background: var(--primary-color, #03a9f4);
@@ -846,13 +1070,64 @@ class BrausteuerungCard extends LitElement {
     return html`
       <div class="status-block">
         <div class="status-temp">${tempContent}</div>
-        <span class="status-badge status-${status}">${status}</span>
+        <div class="status-right">
+          ${this._renderHeaterState()}
+          <span class="status-badge status-${status}">${status}</span>
+        </div>
       </div>
       <div class="status-threshold">
         ${Number.isFinite(threshold)
           ? html`🛡 Sicherheitsabschaltung bei ${threshold} °C`
           : html`🛡 Sicherheitsabschaltung bei —`}
       </div>
+      <div class="status-threshold">
+        🌡 Hysterese: ${this._hysteresis} °C
+      </div>
+      ${this._renderCountdown()}
+    `;
+  }
+
+  /**
+   * Render des Echtzeit-Zustands des Heizungs-Aktors neben der Ist-Temperatur
+   * (Req 5.6) inkl. farbigem Flammensymbol, wenn der Aktor eingeschaltet ist
+   * (Req 5.7), sowie eines Schalt-Buttons für das manuelle Umschalten (Req 5.8).
+   *
+   * Ist kein Heizungs-Aktor konfiguriert, wird nichts angezeigt.
+   *
+   * @returns {import("lit").TemplateResult|string}
+   */
+  _renderHeaterState() {
+    if (!this._configuredHeater) {
+      return "";
+    }
+    const on = this._isHeaterOn;
+    return html`
+      <button
+        class="heater-toggle ${on ? "on" : "off"}"
+        title=${on ? "Heizung ausschalten" : "Heizung einschalten"}
+        @click=${() => this._toggleHeater()}
+      >
+        ${on ? html`<span class="flame">🔥</span> AN` : html`AUS`}
+      </button>
+    `;
+  }
+
+  /**
+   * Render des sekundengenauen Echtzeit-Countdowns der verbleibenden Haltezeit
+   * (Req 4.7). Wird nur angezeigt, wenn ein Raststufen-Timer aktiv läuft.
+   *
+   * @returns {import("lit").TemplateResult|string}
+   */
+  _renderCountdown() {
+    const remaining = this._remainingHoldSeconds;
+    if (remaining === null) {
+      return "";
+    }
+    const mm = Math.floor(remaining / 60);
+    const ss = remaining % 60;
+    const formatted = `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+    return html`
+      <div class="status-countdown">⏱ Verbleibende Haltezeit: ${formatted}</div>
     `;
   }
 
@@ -917,7 +1192,7 @@ class BrausteuerungCard extends LitElement {
           ? html`<div class="placeholder">Noch keine Raststufen. Unten eine Rast hinzufügen.</div>`
           : html`
               <ol class="steps">
-                ${recipe.map((step, i) => this._renderStep(step, i, running, active, showMarkers))}
+                ${recipe.map((step, i) => this._renderStep(step, i, running, active, showMarkers, recipe.length))}
               </ol>
             `}
       </div>
@@ -949,9 +1224,10 @@ class BrausteuerungCard extends LitElement {
    * @param {boolean} running      Ob ein Prozess läuft.
    * @param {number} active        Index der aktiven Rast.
    * @param {boolean} showMarkers  Ob Aktiv-/Fertig-Markierungen anzuzeigen sind.
+   * @param {number} total         Gesamtzahl der Rasten (für Verschiebe-Grenzen).
    * @returns {import("lit").TemplateResult}
    */
-  _renderStep(step, i, running, active, showMarkers) {
+  _renderStep(step, i, running, active, showMarkers, total) {
     if (this._editIndex === i) {
       return html`
         <li class="step editing">
@@ -1015,6 +1291,22 @@ class BrausteuerungCard extends LitElement {
           <span class="step-detail">${step.temperature} °C · ${step.duration} min</span>
         </span>
         <span class="step-actions">
+          <button
+            class="icon-btn"
+            title="Nach oben"
+            ?disabled=${running || i === 0}
+            @click=${() => this._moveStep(i, -1)}
+          >
+            ▲
+          </button>
+          <button
+            class="icon-btn"
+            title="Nach unten"
+            ?disabled=${running || i === total - 1}
+            @click=${() => this._moveStep(i, 1)}
+          >
+            ▼
+          </button>
           <button
             class="icon-btn"
             title="Bearbeiten"
@@ -1128,6 +1420,20 @@ class BrausteuerungCard extends LitElement {
         <datalist id="switch-options">
           ${switchIds.map((id) => html`<option value=${id}></option>`)}
         </datalist>
+
+        <label class="field-label" for="settings-hysteresis">
+          Hysterese (°C, &gt; 0 bis 5)
+        </label>
+        <input
+          id="settings-hysteresis"
+          class="field"
+          type="number"
+          min="0.1"
+          max="5"
+          step="0.1"
+          placeholder="1.0"
+          .value=${String(this._hysteresis)}
+        />
 
         <div class="settings-actions">
           <button class="btn btn-primary" @click=${() => this._saveSettings()}>

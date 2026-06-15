@@ -29,10 +29,20 @@ export const MAX_RECIPE_JSON_LENGTH = 255;
 
 /**
  * Hystereseband in °C: Heizung schaltet AN, sobald die Ist-Temperatur
- * `HYSTERESIS_BAND` unter der Solltemperatur liegt (Req 4.3).
+ * `HYSTERESIS_BAND` unter der Solltemperatur liegt (Req 4.3). Dient als
+ * Default-Wert für das über die Card konfigurierbare Hystereseband (Req 4.9).
  * @type {number}
  */
 export const HYSTERESIS_BAND = 1.0;
+
+/**
+ * Gültiger Wertebereich des konfigurierbaren Hysteresebandes in °C (Req 4.9):
+ * größer als 0 °C bis maximal 5 °C.
+ * @type {number}
+ */
+export const MIN_HYSTERESIS = 0;
+/** @type {number} */
+export const MAX_HYSTERESIS = 5;
 
 /**
  * Untere und obere Grenze einer gültigen Solltemperatur in °C (Req 2.2).
@@ -237,6 +247,42 @@ export function clearRecipe() {
   return [];
 }
 
+/**
+ * Vertauscht die Raststufe an `index` mit ihrem Nachbarn in Richtung
+ * `direction` und liefert eine neue, umsortierte Liste (Req 3.7).
+ *
+ * Die Eingabeliste wird nicht mutiert. An den Listengrenzen (erste Rast nach
+ * oben, letzte Rast nach unten) sowie bei ungültigem `index` oder ungültiger
+ * `direction` wird die Liste unverändert zurückgegeben. Die Operation ist eine
+ * Transposition zweier benachbarter Elemente und damit stets eine Permutation
+ * der Eingabe — es gehen keine Raststufen verloren oder hinzu.
+ *
+ * @param {Braurezept} recipe   Bestehendes Rezept.
+ * @param {number} index        Index der zu verschiebenden Rast.
+ * @param {-1|1} direction      Richtung: `-1` = nach oben, `+1` = nach unten.
+ * @returns {Braurezept} Neues (umsortiertes) Rezept oder unveränderte Liste.
+ */
+export function reorderStep(recipe, index, direction) {
+  if (!Array.isArray(recipe)) {
+    return recipe;
+  }
+  if (direction !== -1 && direction !== 1) {
+    return recipe;
+  }
+  if (!Number.isInteger(index) || index < 0 || index >= recipe.length) {
+    return recipe;
+  }
+  const target = index + direction;
+  if (target < 0 || target >= recipe.length) {
+    return recipe;
+  }
+  const result = recipe.slice();
+  const tmp = result[index];
+  result[index] = result[target];
+  result[target] = tmp;
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Regelungs- und Sicherheitslogik (Task 5.1)
 // ---------------------------------------------------------------------------
@@ -251,10 +297,13 @@ export function clearRecipe() {
  * @param {number} ist       Ist-Temperatur in °C.
  * @param {number} soll      Solltemperatur in °C.
  * @param {boolean} prevState Vorheriger Heizzustand (`true` = AN).
+ * @param {number} [hyst=HYSTERESIS_BAND] Hystereseband in °C; bei fehlendem oder
+ *   ungültigem Wert wird der Default {@link HYSTERESIS_BAND} (1,0 °C) verwendet.
  * @returns {boolean} Neuer Heizzustand (`true` = AN).
  */
-export function hysteresisDecision(ist, soll, prevState) {
-  if (ist < soll - HYSTERESIS_BAND) {
+export function hysteresisDecision(ist, soll, prevState, hyst = HYSTERESIS_BAND) {
+  const band = resolveHysteresis(hyst);
+  if (ist < soll - band) {
     return true;
   }
   if (ist >= soll) {
@@ -299,10 +348,11 @@ export function nextStepTransition(index, length) {
  * @param {number} params.offset       Sicherheits-Offset in °C.
  * @param {boolean} params.sensorValid Ob ein gültiger Sensorwert vorliegt.
  * @param {boolean} params.prevState   Vorheriger Heizzustand.
+ * @param {number} [params.hyst]       Konfiguriertes Hystereseband in °C (Default 1,0).
  * @returns {{heater: boolean, status?: string}} Heizentscheidung und ggf. Statuswechsel.
  */
 export function heatingDecision(params) {
-  const { ist, soll, offset, sensorValid, prevState } = params;
+  const { ist, soll, offset, sensorValid, prevState, hyst } = params;
 
   // Ohne gültigen Sensorwert: Heizung IMMER AUS (Req 10.1).
   if (!sensorValid) {
@@ -314,8 +364,8 @@ export function heatingDecision(params) {
     return { heater: false, status: Status.PAUSED };
   }
 
-  // Regulärer Betrieb: Hysterese-Entscheidung (Req 4.1, 4.3).
-  return { heater: hysteresisDecision(ist, soll, prevState) };
+  // Regulärer Betrieb: Hysterese-Entscheidung mit konfiguriertem Band (Req 4.1, 4.3, 4.9).
+  return { heater: hysteresisDecision(ist, soll, prevState, hyst) };
 }
 
 /**
@@ -327,6 +377,37 @@ export function heatingDecision(params) {
  */
 export function computeSafetyThreshold(soll, offset) {
   return soll + offset;
+}
+
+/**
+ * Prüft, ob ein Eingabewert ein gültiges Hystereseband ist (Req 4.9).
+ *
+ * Gültig genau dann, wenn `value` eine endliche Zahl mit `0 < value <= 5` ist.
+ *
+ * @param {number} value Zu prüfendes Hystereseband in °C.
+ * @returns {boolean} `true`, wenn der Wert ein gültiges Hystereseband ist.
+ */
+export function isValidHysteresis(value) {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value > MIN_HYSTERESIS &&
+    value <= MAX_HYSTERESIS
+  );
+}
+
+/**
+ * Leitet das anzuwendende Hystereseband aus einem (möglicherweise ungültigen)
+ * Rohwert ab (Req 4.9, 4.10). Gültige Werte (`0 < v <= 5`) werden als Zahl
+ * übernommen; fehlende, nicht-numerische oder außerhalb des Bereichs liegende
+ * Werte fallen auf den Default {@link HYSTERESIS_BAND} (1,0 °C) zurück.
+ *
+ * @param {string|number|null|undefined} rawValue Rohwert (z. B. Helferzustand).
+ * @returns {number} Gültiges Hystereseband in °C (Default 1,0).
+ */
+export function resolveHysteresis(rawValue) {
+  const num = typeof rawValue === 'string' ? Number(rawValue) : rawValue;
+  return isValidHysteresis(num) ? num : HYSTERESIS_BAND;
 }
 
 // ---------------------------------------------------------------------------

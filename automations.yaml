@@ -23,12 +23,14 @@
 
 # --- Automation 1: Raststufe steuern (Req 1.2, 4.1-4.5, 8.4) ---
 # Heizt auf die Solltemperatur der aktuellen Raststufe auf, hält sie per
-# Hysterese (Band 1,0 °C) während der Haltezeit, wechselt danach zur nächsten
+# Hysterese (konfigurierbares Band aus input_number.brau_hysterese, Default
+# 1,0 °C) während der Haltezeit, wechselt danach zur nächsten
 # Raststufe und schließt nach der letzten Rast ab.
 - id: brausteuerung_raststufe
   alias: "Brausteuerung - Raststufe"
   description: >
-    Aufheizen auf Solltemperatur, Halten per Hysterese (Band 1,0 °C) für die
+    Aufheizen auf Solltemperatur, Halten per Hysterese (konfigurierbares Band,
+    Default 1,0 °C) für die
     Haltezeit der aktuellen Raststufe, danach Stufenwechsel bzw. Abschluss.
   mode: restart
 
@@ -124,8 +126,9 @@
           data:
             duration: "{{ '%02d:%02d:00' | format(haltezeit_min // 60, haltezeit_min % 60) }}"
 
-        # --- Haltephase (Req 4.3): Hysterese mit Band 1,0 °C ---
-        # ist < soll - 1.0  -> Heizung AN
+        # --- Haltephase (Req 4.3, 4.9): Hysterese mit konfigurierbarem Band ---
+        # Band = input_number.brau_hysterese (Default 1,0 °C bei ungültig/fehlend)
+        # ist < soll - hyst -> Heizung AN
         # ist >= soll       -> Heizung AUS
         # sonst (im Band)   -> Zustand unverändert
         - repeat:
@@ -140,7 +143,10 @@
               - choose:
                   - conditions:
                       - condition: template
-                        value_template: "{{ states(sensor_entity) | float(0) < (soll_temp - 1.0) }}"
+                        value_template: >-
+                          {% set hyst = states('input_number.brau_hysterese') | float(1.0) %}
+                          {% set hyst = hyst if (hyst > 0 and hyst <= 5) else 1.0 %}
+                          {{ states(sensor_entity) | float(0) < (soll_temp - hyst) }}
                     sequence:
                       - service: switch.turn_on
                         target:
@@ -152,7 +158,7 @@
                       - service: switch.turn_off
                         target:
                           entity_id: "{{ heater_entity }}"
-                # Im Band (soll-1.0 <= ist < soll): keine Aktion -> Zustand bleibt
+                # Im Band (soll-hyst <= ist < soll): keine Aktion -> Zustand bleibt
               - delay:
                   seconds: 5
 
