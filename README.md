@@ -1,3 +1,6 @@
+# Under Construction, not running jet
+#
+#
 # 🍺 Brausteuerung für Home Assistant
 
 Die Brausteuerung ist eine auf Home Assistant basierende Sudhaus-/Maischesteuerung
