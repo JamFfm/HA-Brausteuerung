@@ -29,10 +29,20 @@ export const MAX_RECIPE_JSON_LENGTH = 255;
 
 /**
  * Hystereseband in °C: Heizung schaltet AN, sobald die Ist-Temperatur
- * `HYSTERESIS_BAND` unter der Solltemperatur liegt (Req 4.3).
+ * `HYSTERESIS_BAND` unter der Solltemperatur liegt (Req 4.3). Dient als
+ * Default-Wert für das über die Card konfigurierbare Hystereseband (Req 4.9).
  * @type {number}
  */
 export const HYSTERESIS_BAND = 1.0;
+
+/**
+ * Gültiger Wertebereich des konfigurierbaren Hysteresebandes in °C (Req 4.9):
+ * größer als 0 °C bis maximal 5 °C.
+ * @type {number}
+ */
+export const MIN_HYSTERESIS = 0;
+/** @type {number} */
+export const MAX_HYSTERESIS = 5;
 
 /**
  * Untere und obere Grenze einer gültigen Solltemperatur in °C (Req 2.2).
@@ -41,6 +51,24 @@ export const HYSTERESIS_BAND = 1.0;
 export const MIN_TEMPERATURE = 0;
 /** @type {number} */
 export const MAX_TEMPERATURE = 100;
+
+/**
+ * Standard-Sicherheits-Offset in °C (Req 9.5): Der Sicherheitsschwellwert liegt
+ * standardmäßig 10 °C oberhalb der Solltemperatur. Dient als sicherer Fallback,
+ * falls der Helfer `input_number.brau_sicherheits_offset` (noch) keinen oder
+ * keinen gültigen Wert besitzt — z. B. direkt nach dem erstmaligen Anlegen.
+ * @type {number}
+ */
+export const DEFAULT_SAFETY_OFFSET = 10;
+
+/**
+ * Gültiger Wertebereich des Sicherheits-Offsets in °C (Req 9.5/9.6):
+ * 0 °C bis 20 °C (entspricht den Helfer-Grenzen in `configuration.yaml`).
+ * @type {number}
+ */
+export const MIN_SAFETY_OFFSET = 0;
+/** @type {number} */
+export const MAX_SAFETY_OFFSET = 20;
 
 /**
  * Mögliche Betriebszustände der Brausteuerung.
@@ -135,28 +163,45 @@ export function resolveStepName(name, position) {
 }
 
 /**
- * Serialisiert ein Braurezept zu einem JSON-String (Req 2.1, 2.6).
+ * Serialisiert ein Braurezept zu einem **kompakten** JSON-String (Req 2.1, 2.6).
+ *
+ * Zur Platzersparnis im 255-Zeichen-begrenzten Helfer werden kurze Schlüssel
+ * verwendet: `n` (name), `t` (temperature), `d` (duration). Die In-Memory-Form
+ * bleibt die ausführliche `{ name, temperature, duration }`; nur der persistierte
+ * String ist kompakt. {@link parseRecipe} expandiert wieder in die Langform.
  *
  * @param {Braurezept} recipe Das zu serialisierende Rezept.
- * @returns {string} JSON-String des Rezepts.
+ * @returns {string} Kompakter JSON-String des Rezepts.
  */
 export function serializeRecipe(recipe) {
-  return JSON.stringify(recipe);
+  const compact = (Array.isArray(recipe) ? recipe : []).map((s) => ({
+    n: s.name,
+    t: s.temperature,
+    d: s.duration,
+  }));
+  return JSON.stringify(compact);
 }
 
 /**
- * Parst einen JSON-String zu einem Braurezept.
+ * Parst einen JSON-String zu einem Braurezept und expandiert das kompakte
+ * Format (`n`/`t`/`d`) in die In-Memory-Langform (`name`/`temperature`/`duration`).
  *
- * Bei Parse-Fehlern (leerer String, ungültiges JSON, beschädigter Wert)
- * wird ein leeres Rezept `[]` zurückgegeben (Error Handling im Design).
+ * Akzeptiert sowohl das kompakte als auch (zur Robustheit) das ausführliche
+ * Format pro Eintrag. Bei Parse-Fehlern (leerer String, ungültiges JSON,
+ * beschädigter Wert) wird ein leeres Rezept `[]` zurückgegeben (Error Handling).
  *
  * @param {string} jsonString Serialisiertes Rezept.
- * @returns {Braurezept} Das geparste Rezept oder `[]` bei Fehler.
+ * @returns {Braurezept} Das geparste Rezept (Langform) oder `[]` bei Fehler.
  */
 export function parseRecipe(jsonString) {
   try {
     const parsed = JSON.parse(jsonString);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((s) => ({
+      name: s && s.n !== undefined ? s.n : s?.name,
+      temperature: s && s.t !== undefined ? s.t : s?.temperature,
+      duration: s && s.d !== undefined ? s.d : s?.duration,
+    }));
   } catch {
     return [];
   }
@@ -165,11 +210,14 @@ export function parseRecipe(jsonString) {
 /**
  * Prüft, ob ein Rezept persistiert werden darf (255-Zeichen-Grenze, Req 2.1, 2.4).
  *
+ * Maßgeblich ist die Länge der **kompakt serialisierten** Form (siehe
+ * {@link serializeRecipe}), da genau diese im Helfer gespeichert wird.
+ *
  * @param {Braurezept} recipe Das zu prüfende Rezept.
- * @returns {boolean} `true`, wenn `JSON.stringify(recipe).length <= 255`.
+ * @returns {boolean} `true`, wenn `serializeRecipe(recipe).length <= 255`.
  */
 export function canPersistRecipe(recipe) {
-  return JSON.stringify(recipe).length <= MAX_RECIPE_JSON_LENGTH;
+  return serializeRecipe(recipe).length <= MAX_RECIPE_JSON_LENGTH;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +285,42 @@ export function clearRecipe() {
   return [];
 }
 
+/**
+ * Vertauscht die Raststufe an `index` mit ihrem Nachbarn in Richtung
+ * `direction` und liefert eine neue, umsortierte Liste (Req 3.7).
+ *
+ * Die Eingabeliste wird nicht mutiert. An den Listengrenzen (erste Rast nach
+ * oben, letzte Rast nach unten) sowie bei ungültigem `index` oder ungültiger
+ * `direction` wird die Liste unverändert zurückgegeben. Die Operation ist eine
+ * Transposition zweier benachbarter Elemente und damit stets eine Permutation
+ * der Eingabe — es gehen keine Raststufen verloren oder hinzu.
+ *
+ * @param {Braurezept} recipe   Bestehendes Rezept.
+ * @param {number} index        Index der zu verschiebenden Rast.
+ * @param {-1|1} direction      Richtung: `-1` = nach oben, `+1` = nach unten.
+ * @returns {Braurezept} Neues (umsortiertes) Rezept oder unveränderte Liste.
+ */
+export function reorderStep(recipe, index, direction) {
+  if (!Array.isArray(recipe)) {
+    return recipe;
+  }
+  if (direction !== -1 && direction !== 1) {
+    return recipe;
+  }
+  if (!Number.isInteger(index) || index < 0 || index >= recipe.length) {
+    return recipe;
+  }
+  const target = index + direction;
+  if (target < 0 || target >= recipe.length) {
+    return recipe;
+  }
+  const result = recipe.slice();
+  const tmp = result[index];
+  result[index] = result[target];
+  result[target] = tmp;
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Regelungs- und Sicherheitslogik (Task 5.1)
 // ---------------------------------------------------------------------------
@@ -251,10 +335,13 @@ export function clearRecipe() {
  * @param {number} ist       Ist-Temperatur in °C.
  * @param {number} soll      Solltemperatur in °C.
  * @param {boolean} prevState Vorheriger Heizzustand (`true` = AN).
+ * @param {number} [hyst=HYSTERESIS_BAND] Hystereseband in °C; bei fehlendem oder
+ *   ungültigem Wert wird der Default {@link HYSTERESIS_BAND} (1,0 °C) verwendet.
  * @returns {boolean} Neuer Heizzustand (`true` = AN).
  */
-export function hysteresisDecision(ist, soll, prevState) {
-  if (ist < soll - HYSTERESIS_BAND) {
+export function hysteresisDecision(ist, soll, prevState, hyst = HYSTERESIS_BAND) {
+  const band = resolveHysteresis(hyst);
+  if (ist < soll - band) {
     return true;
   }
   if (ist >= soll) {
@@ -299,10 +386,11 @@ export function nextStepTransition(index, length) {
  * @param {number} params.offset       Sicherheits-Offset in °C.
  * @param {boolean} params.sensorValid Ob ein gültiger Sensorwert vorliegt.
  * @param {boolean} params.prevState   Vorheriger Heizzustand.
+ * @param {number} [params.hyst]       Konfiguriertes Hystereseband in °C (Default 1,0).
  * @returns {{heater: boolean, status?: string}} Heizentscheidung und ggf. Statuswechsel.
  */
 export function heatingDecision(params) {
-  const { ist, soll, offset, sensorValid, prevState } = params;
+  const { ist, soll, offset, sensorValid, prevState, hyst } = params;
 
   // Ohne gültigen Sensorwert: Heizung IMMER AUS (Req 10.1).
   if (!sensorValid) {
@@ -314,8 +402,8 @@ export function heatingDecision(params) {
     return { heater: false, status: Status.PAUSED };
   }
 
-  // Regulärer Betrieb: Hysterese-Entscheidung (Req 4.1, 4.3).
-  return { heater: hysteresisDecision(ist, soll, prevState) };
+  // Regulärer Betrieb: Hysterese-Entscheidung mit konfiguriertem Band (Req 4.1, 4.3, 4.9).
+  return { heater: hysteresisDecision(ist, soll, prevState, hyst) };
 }
 
 /**
@@ -327,6 +415,69 @@ export function heatingDecision(params) {
  */
 export function computeSafetyThreshold(soll, offset) {
   return soll + offset;
+}
+
+/**
+ * Prüft, ob ein Eingabewert ein gültiges Hystereseband ist (Req 4.9).
+ *
+ * Gültig genau dann, wenn `value` eine endliche Zahl mit `0 < value <= 5` ist.
+ *
+ * @param {number} value Zu prüfendes Hystereseband in °C.
+ * @returns {boolean} `true`, wenn der Wert ein gültiges Hystereseband ist.
+ */
+export function isValidHysteresis(value) {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value > MIN_HYSTERESIS &&
+    value <= MAX_HYSTERESIS
+  );
+}
+
+/**
+ * Leitet das anzuwendende Hystereseband aus einem (möglicherweise ungültigen)
+ * Rohwert ab (Req 4.9, 4.10). Gültige Werte (`0 < v <= 5`) werden als Zahl
+ * übernommen; fehlende, nicht-numerische oder außerhalb des Bereichs liegende
+ * Werte fallen auf den Default {@link HYSTERESIS_BAND} (1,0 °C) zurück.
+ *
+ * @param {string|number|null|undefined} rawValue Rohwert (z. B. Helferzustand).
+ * @returns {number} Gültiges Hystereseband in °C (Default 1,0).
+ */
+export function resolveHysteresis(rawValue) {
+  const num = typeof rawValue === 'string' ? Number(rawValue) : rawValue;
+  return isValidHysteresis(num) ? num : HYSTERESIS_BAND;
+}
+
+/**
+ * Leitet den anzuwendenden Sicherheits-Offset aus einem (möglicherweise
+ * ungültigen) Rohwert ab (Req 9.5, 9.6). Gültige Werte (`0 <= v <= 20`) werden
+ * als Zahl übernommen; fehlende, nicht-numerische oder außerhalb des Bereichs
+ * liegende Werte fallen auf den sicheren Default {@link DEFAULT_SAFETY_OFFSET}
+ * (10 °C) zurück. So bleibt der Übertemperaturschutz auch dann wirksam, wenn der
+ * Helfer `input_number.brau_sicherheits_offset` (noch) keinen gültigen Wert hat.
+ *
+ * @param {string|number|null|undefined} rawValue Rohwert (z. B. Helferzustand).
+ * @returns {number} Gültiger Sicherheits-Offset in °C (Default 10).
+ */
+export function resolveSafetyOffset(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return DEFAULT_SAFETY_OFFSET;
+  }
+  // Leere/whitespace-only Strings (z. B. fehlender Helferwert) gelten als
+  // ungültig — NICHT als 0 (Number('') === 0 wäre sicherheitskritisch).
+  if (typeof rawValue === 'string' && rawValue.trim() === '') {
+    return DEFAULT_SAFETY_OFFSET;
+  }
+  const num = typeof rawValue === 'string' ? Number(rawValue) : rawValue;
+  if (
+    typeof num === 'number' &&
+    Number.isFinite(num) &&
+    num >= MIN_SAFETY_OFFSET &&
+    num <= MAX_SAFETY_OFFSET
+  ) {
+    return num;
+  }
+  return DEFAULT_SAFETY_OFFSET;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,4 +550,552 @@ export function shouldUpdateDecision(showSettings, editIndex, changedProps) {
     );
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Rezept-Bibliothek (Task 13.1, Req 12)
+// ---------------------------------------------------------------------------
+//
+// Die Rezept-Bibliothek ist eine Sammlung benannter Rezepte, die NICHT der
+// 255-Zeichen-Grenze des aktiven Rezepts (input_text.brau_rezept_json)
+// unterliegt — sie wird im HA-Benutzerspeicher abgelegt. Diese Funktionen sind
+// rein (keine HA-Seiteneffekte) und arbeiten immutabel.
+//
+// Datenmodell:
+//   BibliotheksRezept = { name: string, steps: Raststufe[] }
+//   RezeptBibliothek  = BibliotheksRezept[]
+//
+// Eindeutigkeit der Namen: getrimmt + case-sensitive. Ein nach dem Trimmen
+// leerer Name ist ungültig.
+
+/**
+ * Normalisiert einen Rezeptnamen (trimmt führende/abschließende Whitespaces).
+ * @param {string} name Roh-Name.
+ * @returns {string} Getrimmter Name (leerer String bei nicht-String/leer).
+ */
+function normalizeRecipeName(name) {
+  return typeof name === 'string' ? name.trim() : '';
+}
+
+/**
+ * Findet ein Bibliotheks-Rezept anhand seines (getrimmten) Namens (Req 12.3).
+ *
+ * @param {Array} library Rezept-Bibliothek.
+ * @param {string} name   Gesuchter Name (wird getrimmt).
+ * @returns {Object|undefined} Das Rezept `{ name, steps }` oder `undefined`.
+ */
+export function findRecipe(library, name) {
+  if (!Array.isArray(library)) return undefined;
+  const key = normalizeRecipeName(name);
+  if (key === '') return undefined;
+  return library.find((r) => r && normalizeRecipeName(r.name) === key);
+}
+
+/**
+ * Fügt ein benanntes Rezept hinzu oder ersetzt das gleichnamige (Req 12.1, 12.2).
+ *
+ * Liefert eine neue Bibliothek (immutabel). Der Name wird getrimmt und
+ * case-sensitive verglichen. Bei neuem Namen wird das Rezept angehängt; bei
+ * vorhandenem Namen wird genau dieser Eintrag an gleicher Position ersetzt
+ * (Länge unverändert). Ein nach dem Trimmen leerer Name lässt die Bibliothek
+ * unverändert. Die Schritte werden flach kopiert; Solltemperaturen bleiben in °C.
+ *
+ * @param {Array} library Bestehende Bibliothek.
+ * @param {string} name   Rezeptname (wird getrimmt).
+ * @param {Array} steps   Geordnete Raststufen-Liste.
+ * @returns {Array} Neue Bibliothek.
+ */
+export function upsertRecipe(library, name, steps) {
+  const base = Array.isArray(library) ? library : [];
+  const key = normalizeRecipeName(name);
+  if (key === '') {
+    return base;
+  }
+  const entry = { name: key, steps: Array.isArray(steps) ? steps.map((s) => ({ ...s })) : [] };
+  const idx = base.findIndex((r) => r && normalizeRecipeName(r.name) === key);
+  if (idx === -1) {
+    return [...base, entry];
+  }
+  return base.map((r, i) => (i === idx ? entry : r));
+}
+
+/**
+ * Entfernt das Rezept mit (getrimmtem) Namen aus der Bibliothek (Req 12.6).
+ *
+ * Liefert eine neue Bibliothek; die Reihenfolge der verbleibenden Rezepte
+ * bleibt erhalten. Ein unbekannter Name lässt die Bibliothek unverändert.
+ *
+ * @param {Array} library Bestehende Bibliothek.
+ * @param {string} name   Zu entfernender Name (wird getrimmt).
+ * @returns {Array} Neue Bibliothek.
+ */
+export function removeRecipe(library, name) {
+  if (!Array.isArray(library)) return [];
+  const key = normalizeRecipeName(name);
+  if (key === '') return library;
+  return library.filter((r) => !(r && normalizeRecipeName(r.name) === key));
+}
+
+/**
+ * Parst den Rohwert der Bibliothek aus dem HA-Benutzerspeicher robust (Req 12.8).
+ *
+ * Akzeptiert sowohl bereits geparste Arrays als auch JSON-Strings. Bei
+ * ungültigem JSON, fehlendem Wert oder Nicht-Array wird eine leere Bibliothek
+ * `[]` geliefert. Einträge ohne gültige Struktur (`name`-String und
+ * `steps`-Array) werden verworfen.
+ *
+ * @param {unknown} raw Rohwert (Array, JSON-String, null, …).
+ * @returns {Array} Geparste, bereinigte Bibliothek.
+ */
+export function parseLibrary(raw) {
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(data)) {
+    return [];
+  }
+  return data
+    .filter((r) => r && typeof r.name === 'string' && Array.isArray(r.steps))
+    .map((r) => ({ name: r.name, steps: r.steps }));
+}
+
+/**
+ * Serialisiert die Bibliothek zu einem JSON-String für `set_user_data`.
+ *
+ * @param {Array} library Bibliothek.
+ * @returns {string} JSON-String.
+ */
+export function serializeLibrary(library) {
+  return JSON.stringify(Array.isArray(library) ? library : []);
+}
+
+// ---------------------------------------------------------------------------
+// Temperaturverlauf-Graph (Req 13) — reine, HA-/DOM-freie Hilfsfunktionen
+// ---------------------------------------------------------------------------
+//
+// Der Graph wird in der Card aus selbst aufgezeichneten Messpunkten gerendert.
+// Ein Messpunkt (`GraphSample`) hat die Form:
+//   { t: number (ms seit Epoch), temp: number (°C), soll: number|null (°C) }
+// Die folgenden Funktionen sind rein und immutabel und damit property-testbar.
+
+/**
+ * Standard-/Grenzwerte für die wählbare Anzeigedauer des Graphen in Stunden
+ * (Req 13.3): wählbar 1–4 h, Default 2 h.
+ * @type {number}
+ */
+export const MIN_GRAPH_HOURS = 1;
+/** @type {number} */
+export const MAX_GRAPH_HOURS = 4;
+/** @type {number} */
+export const DEFAULT_GRAPH_HOURS = 2;
+
+/**
+ * Begrenzt einen (möglicherweise ungültigen) Stundenwert auf den gültigen
+ * Bereich 1–4 (ganzzahlig). Ungültige/fehlende Werte ⇒ Default 2 (Req 13.3).
+ *
+ * @param {number|string|null|undefined} value Roh-Stundenwert.
+ * @returns {number} Ganzzahliger Stundenwert im Bereich {@link MIN_GRAPH_HOURS}..{@link MAX_GRAPH_HOURS}.
+ */
+export function clampGraphHours(value) {
+  if (value === null || value === undefined) {
+    return DEFAULT_GRAPH_HOURS;
+  }
+  if (typeof value === 'string' && value.trim() === '') {
+    return DEFAULT_GRAPH_HOURS;
+  }
+  const num = typeof value === 'string' ? Number(value) : value;
+  if (typeof num !== 'number' || !Number.isFinite(num)) {
+    return DEFAULT_GRAPH_HOURS;
+  }
+  const rounded = Math.round(num);
+  if (rounded < MIN_GRAPH_HOURS) return MIN_GRAPH_HOURS;
+  if (rounded > MAX_GRAPH_HOURS) return MAX_GRAPH_HOURS;
+  return rounded;
+}
+
+/**
+ * Liefert das dauerabhängige Aufzeichnungsintervall in Millisekunden (Req 13.8).
+ *
+ * Das Intervall skaliert mit der gewählten Anzeigedauer, sodass die Anzahl der
+ * gehaltenen Messpunkte über alle Dauern ähnlich bleibt: 15 s je Stunde
+ * Anzeigedauer (1 h → 15 s, 2 h → 30 s, 3 h → 45 s, 4 h → 60 s).
+ *
+ * @param {number|string} hours Anzeigedauer in Stunden.
+ * @returns {number} Aufzeichnungsintervall in Millisekunden.
+ */
+export function graphSampleIntervalMs(hours) {
+  return clampGraphHours(hours) * 15 * 1000;
+}
+
+/**
+ * Liefert den dauerabhängigen Abstand der Zeitachsen-Beschriftung in Minuten
+ * (Req 13.9). Skaliert mit der Anzeigedauer: 15 min je Stunde (1 h → 15 min,
+ * 2 h → 30 min, 3 h → 45 min, 4 h → 60 min). So bleibt die Achse über alle
+ * Dauern ähnlich dicht beschriftet, der „Maßstab" passt sich aber an.
+ *
+ * @param {number|string} hours Anzeigedauer in Stunden.
+ * @returns {number} Tick-Abstand der Zeitachse in Minuten.
+ */
+export function graphTimeStepMinutes(hours) {
+  return clampGraphHours(hours) * 15;
+}
+
+/**
+ * Formatiert einen Zeitstempel als absolute Uhrzeit im Format `hh:mm`
+ * (lokale Zeit, 24 h) für die Zeitachsen-Beschriftung (Req 13.9).
+ *
+ * @param {number|Date} ms Zeitstempel in ms seit Epoch oder ein `Date`.
+ * @returns {string} Uhrzeit als `hh:mm` (z. B. `"08:05"`).
+ */
+export function formatClock(ms) {
+  const d = ms instanceof Date ? ms : new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/**
+ * Berechnet „runde" Achsenmarken für ein numerisches Intervall nach dem
+ * Heckbert-Verfahren (für die Temperaturachse, Req 13.10). Liefert
+ * gleichmäßige, gut lesbare Werte (…, 50, 55, 60, …), die das Intervall
+ * `[min, max]` umschließen.
+ *
+ * @param {number} min       Unterer Wert.
+ * @param {number} max       Oberer Wert.
+ * @param {number} [maxTicks=5] Ungefähre Zielanzahl der Marken.
+ * @returns {number[]} Aufsteigende Liste runder Markenwerte.
+ */
+export function niceTicks(min, max, maxTicks = 5) {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || maxTicks < 2) {
+    return [];
+  }
+  let lo = Math.min(min, max);
+  let hi = Math.max(min, max);
+  if (lo === hi) {
+    lo -= 1;
+    hi += 1;
+  }
+  const niceNum = (range, round) => {
+    const exp = Math.floor(Math.log10(range));
+    const frac = range / Math.pow(10, exp);
+    let nf;
+    if (round) {
+      if (frac < 1.5) nf = 1;
+      else if (frac < 3) nf = 2;
+      else if (frac < 7) nf = 5;
+      else nf = 10;
+    } else {
+      if (frac <= 1) nf = 1;
+      else if (frac <= 2) nf = 2;
+      else if (frac <= 5) nf = 5;
+      else nf = 10;
+    }
+    return nf * Math.pow(10, exp);
+  };
+  const range = niceNum(hi - lo, false);
+  const step = niceNum(range / (maxTicks - 1), true);
+  if (!Number.isFinite(step) || step <= 0) {
+    return [];
+  }
+  const niceMin = Math.floor(lo / step) * step;
+  const niceMax = Math.ceil(hi / step) * step;
+  const ticks = [];
+  // Dezimalstellen für saubere Rundung (vermeidet 0.30000000000000004);
+  // auf den gültigen toFixed-Bereich [0,100] begrenzen.
+  const decimals = Math.min(100, Math.max(0, -Math.floor(Math.log10(step))));
+  for (let v = niceMin; v <= niceMax + step * 0.5; v += step) {
+    ticks.push(Number(v.toFixed(decimals)));
+  }
+  return ticks;
+}
+
+/**
+ * Entscheidet, ob aktuell Messpunkte aufgezeichnet werden sollen (Req 13.4, 13.6).
+ *
+ * Aufgezeichnet wird genau dann, wenn ein Brauprozess läuft (`status === running`)
+ * ODER der Benutzer die Anzeige der aktuellen Temperatur auch ohne aktive
+ * Brausteuerung aktiviert hat (`showAlways === true`).
+ *
+ * @param {string} status      Aktueller Betriebsstatus (siehe {@link Status}).
+ * @param {boolean} showAlways Ob auch ohne laufenden Prozess aufgezeichnet wird.
+ * @returns {boolean} `true`, wenn ein Messpunkt aufgezeichnet werden soll.
+ */
+export function shouldRecordSample(status, showAlways) {
+  return status === Status.RUNNING || showAlways === true;
+}
+
+/**
+ * Entfernt Messpunkte, die älter als das Zeitfenster (`windowHours` Stunden vor
+ * `now`) sind (Req 13.3). Die Reihenfolge der verbleibenden Punkte bleibt
+ * erhalten; die Eingabeliste wird nicht mutiert.
+ *
+ * @param {Array} samples     Messpunkte (`{t, temp, soll}`).
+ * @param {number} now        Aktuelle Zeit in ms seit Epoch.
+ * @param {number} windowHours Anzeigedauer in Stunden.
+ * @returns {Array} Neue, gefilterte Messpunktliste.
+ */
+export function pruneSamples(samples, now, windowHours) {
+  if (!Array.isArray(samples)) return [];
+  const hours = clampGraphHours(windowHours);
+  const cutoff = now - hours * 3600 * 1000;
+  return samples.filter(
+    (s) => s && Number.isFinite(s.t) && s.t >= cutoff
+  );
+}
+
+/**
+ * Hängt einen Messpunkt an und beschneidet anschließend auf das Zeitfenster
+ * (Req 13.1, 13.3). Liefert eine neue Liste (immutabel).
+ *
+ * @param {Array} samples     Bestehende Messpunkte.
+ * @param {{t: number, temp: number, soll: (number|null)}} sample Neuer Punkt.
+ * @param {number} windowHours Anzeigedauer in Stunden (für die Beschneidung).
+ * @returns {Array} Neue Messpunktliste.
+ */
+export function appendSample(samples, sample, windowHours) {
+  const base = Array.isArray(samples) ? samples : [];
+  if (!sample || !Number.isFinite(sample.t) || !Number.isFinite(sample.temp)) {
+    return base.slice();
+  }
+  const next = [...base, sample];
+  return pruneSamples(next, sample.t, windowHours);
+}
+
+/**
+ * Serialisiert die Messpunkte des Temperaturverlaufs zu einem JSON-String für
+ * die benutzerbezogene Persistenz im HA-Benutzerspeicher (Req 13.12).
+ *
+ * @param {Array} samples Messpunkte (`{t, temp, soll}`).
+ * @returns {string} JSON-String der Messpunktliste.
+ */
+export function serializeSamples(samples) {
+  return JSON.stringify(Array.isArray(samples) ? samples : []);
+}
+
+/**
+ * Parst persistierte Messpunkte robust aus dem HA-Benutzerspeicher (Req 13.12).
+ *
+ * Akzeptiert sowohl bereits geparste Arrays als auch JSON-Strings. Ungültiges
+ * JSON, fehlender Wert oder Nicht-Array ergeben eine leere Liste `[]`. Einträge
+ * ohne endliche `t`/`temp` werden verworfen; `soll` wird auf eine endliche Zahl
+ * normalisiert oder `null`.
+ *
+ * @param {unknown} raw Rohwert (Array, JSON-String, null, …).
+ * @returns {Array} Geparste, bereinigte Messpunktliste.
+ */
+export function parseSamples(raw) {
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(data)) {
+    return [];
+  }
+  return data
+    .filter((s) => s && Number.isFinite(s.t) && Number.isFinite(s.temp))
+    .map((s) => ({
+      t: s.t,
+      temp: s.temp,
+      soll: Number.isFinite(s.soll) ? s.soll : null,
+    }));
+}
+
+/**
+ * Baut die Konfiguration für die eingebettete native `history-graph`-Karte
+ * (Req 13). Die Card nutzt damit die echte Recorder-Historie von Home Assistant.
+ * Die Ist-Temperatur (Sensor) und — sofern gesetzt — die Solltemperatur werden
+ * als Linien angezeigt; die Solltemperatur wird in Rot gezeichnet
+ * (`color: "red"`, unterstützt ab HA 2026.6).
+ *
+ * Nur Entitäten mit gültiger (nicht-leerer) ID werden aufgenommen. `hours`
+ * steuert `hours_to_show` und darf **fraktional** sein (z. B. beim Begrenzen des
+ * Fensters auf den Startzeitpunkt eines laufenden Brauvorgangs). Gültig ist jede
+ * endliche Zahl > 0; sie wird auf maximal {@link MAX_GRAPH_HOURS} gedeckelt.
+ * Ungültige/fehlende Werte fallen auf {@link DEFAULT_GRAPH_HOURS} zurück.
+ *
+ * @param {string} sensorEntity   Entity-ID des Temperatursensors (Ist).
+ * @param {string} setpointEntity Entity-ID der Solltemperatur (z. B. input_number).
+ * @param {number|string} hours   Anzeigedauer in Stunden (fraktional erlaubt, max. 4).
+ * @returns {Object} Gültige `history-graph`-Kartenkonfiguration.
+ */
+export function buildHistoryGraphConfig(sensorEntity, setpointEntity, hours) {
+  const entities = [];
+  if (typeof sensorEntity === 'string' && sensorEntity.trim() !== '') {
+    entities.push({ entity: sensorEntity, name: 'Ist-Temperatur' });
+  }
+  if (typeof setpointEntity === 'string' && setpointEntity.trim() !== '') {
+    entities.push({ entity: setpointEntity, name: 'Solltemperatur', color: 'red' });
+  }
+  const num = typeof hours === 'string' ? Number(hours) : hours;
+  const hoursToShow =
+    typeof num === 'number' && Number.isFinite(num) && num > 0
+      ? Math.min(num, MAX_GRAPH_HOURS)
+      : DEFAULT_GRAPH_HOURS;
+  return {
+    type: 'history-graph',
+    hours_to_show: hoursToShow,
+    entities,
+  };
+}
+
+/**
+ * Berechnet aus den Messpunkten ein rein geometrisches Modell für das SVG-
+ * Rendering des Temperaturverlaufs (Req 13.1, 13.2). Zwei Datenreihen werden
+ * aufbereitet: die Ist-Temperatur (`tempPoints`) und — sofern vorhanden — die
+ * Solltemperatur (`sollPoints`). Die y-Skala umfasst beide Reihen.
+ *
+ * Die Funktion ist rein: gleiche Eingaben ⇒ gleiche Ausgaben, keine
+ * Seiteneffekte. x bildet die Zeit linear auf die Zeichenbreite ab, y die
+ * Temperatur (invertiert, da SVG-y nach unten wächst). Bei leerer Liste wird
+ * `{ empty: true, ... }` geliefert; bei nur einem Punkt oder konstantem Wert
+ * werden Division-durch-Null-Fälle sicher behandelt.
+ *
+ * @param {Array} samples Messpunkte (`{t, temp, soll}`).
+ * @param {Object} [options] Zeichenmaße und Achsen-Parameter.
+ * @param {number} [options.width=400]
+ * @param {number} [options.height=160]
+ * @param {number} [options.padLeft=40]
+ * @param {number} [options.padRight=10]
+ * @param {number} [options.padTop=8]
+ * @param {number} [options.padBottom=28]
+ * @param {number} [options.windowHours] Anzeigedauer in Stunden; ist sie gesetzt,
+ *   spannt die Zeitachse das feste Fenster `[now - windowHours, now]` auf
+ *   (stabiler „Maßstab"). Ohne Angabe wird der Datenbereich verwendet.
+ * @param {number} [options.now] Bezugszeitpunkt (ms) für das Zeitfenster
+ *   (Default: Zeit des jüngsten Messpunkts).
+ * @returns {Object} Geometriemodell mit `tempPoints`/`sollPoints` ({x,y}),
+ *   Wertebereich (`minVal`/`maxVal`), Zeitbereich (`tMin`/`tMax`) sowie
+ *   beschrifteten Achsenmarken `xTicks` ({x, label "hh:mm"}) und `yTicks`
+ *   ({y, value, label}).
+ */
+export function buildGraphModel(samples, options = {}) {
+  const {
+    width = 400,
+    height = 160,
+    padLeft = 40,
+    padRight = 10,
+    padTop = 8,
+    padBottom = 28,
+    windowHours = null,
+    now = null,
+  } = options;
+
+  const meta = { width, height, padLeft, padRight, padTop, padBottom };
+
+  const list = (Array.isArray(samples) ? samples : []).filter(
+    (s) => s && Number.isFinite(s.t) && Number.isFinite(s.temp)
+  );
+
+  const x0 = padLeft;
+  const x1 = width - padRight;
+  const y0 = padTop;
+  const y1 = height - padBottom;
+
+  // --- Zeitachse (x): festes Fenster bei gesetztem windowHours, sonst Datenbereich ---
+  let tMin;
+  let tMax;
+  if (Number.isFinite(windowHours) || typeof windowHours === 'string') {
+    const hours = clampGraphHours(windowHours);
+    const ref = Number.isFinite(now)
+      ? now
+      : list.length > 0
+        ? list[list.length - 1].t
+        : Date.now();
+    tMax = ref;
+    tMin = ref - hours * 3600 * 1000;
+  } else if (list.length > 0) {
+    tMin = list[0].t;
+    tMax = list[list.length - 1].t;
+  } else {
+    tMin = null;
+    tMax = null;
+  }
+  const tSpan = tMin !== null ? tMax - tMin : 0;
+  const xOf = (t) => (tSpan === 0 ? x0 : x0 + ((t - tMin) / tSpan) * (x1 - x0));
+
+  // --- Zeitachsen-Marken: absolute Uhrzeit hh:mm im dauerabhängigen Raster (Req 13.9) ---
+  let xTicks = [];
+  if (tMin !== null && tSpan > 0) {
+    const stepMin = graphTimeStepMinutes(
+      Number.isFinite(windowHours) || typeof windowHours === 'string'
+        ? windowHours
+        : Math.max(1, Math.round(tSpan / 3600000))
+    );
+    const stepMs = stepMin * 60 * 1000;
+    // Erste Marke auf das nächste „runde" Vielfache von stepMin nach tMin legen.
+    const firstTick = Math.ceil(tMin / stepMs) * stepMs;
+    for (let t = firstTick; t <= tMax + 1; t += stepMs) {
+      xTicks.push({ x: xOf(t), t, label: formatClock(t) });
+    }
+  }
+
+  if (list.length === 0) {
+    return {
+      empty: true,
+      tempPoints: [],
+      sollPoints: [],
+      minVal: null,
+      maxVal: null,
+      tMin,
+      tMax,
+      xTicks,
+      yTicks: [],
+      plot: { x0, x1, y0, y1 },
+      ...meta,
+    };
+  }
+
+  let minVal = Infinity;
+  let maxVal = -Infinity;
+  for (const s of list) {
+    if (s.temp < minVal) minVal = s.temp;
+    if (s.temp > maxVal) maxVal = s.temp;
+    if (Number.isFinite(s.soll)) {
+      if (s.soll < minVal) minVal = s.soll;
+      if (s.soll > maxVal) maxVal = s.soll;
+    }
+  }
+  if (minVal === maxVal) {
+    minVal -= 1;
+    maxVal += 1;
+  }
+
+  // --- Temperaturachse (y): runde Marken, die den Wertebereich umschließen (Req 13.10) ---
+  const ticksVals = niceTicks(minVal, maxVal, 5);
+  // Skala an die runden Marken anpassen, damit Beschriftung und Kurve passen.
+  const axisMin = ticksVals.length > 0 ? Math.min(ticksVals[0], minVal) : minVal;
+  const axisMax =
+    ticksVals.length > 0 ? Math.max(ticksVals[ticksVals.length - 1], maxVal) : maxVal;
+  const vSpan = axisMax - axisMin || 1;
+  const yOf = (v) => y1 - ((v - axisMin) / vSpan) * (y1 - y0);
+
+  const yTicks = ticksVals.map((v) => ({ y: yOf(v), value: v, label: `${v}°` }));
+
+  const tempPoints = list.map((s) => ({ x: xOf(s.t), y: yOf(s.temp) }));
+  const sollPoints = list
+    .filter((s) => Number.isFinite(s.soll))
+    .map((s) => ({ x: xOf(s.t), y: yOf(s.soll) }));
+
+  return {
+    empty: false,
+    tempPoints,
+    sollPoints,
+    minVal: axisMin,
+    maxVal: axisMax,
+    tMin,
+    tMax,
+    xTicks,
+    yTicks,
+    plot: { x0, x1, y0, y1 },
+    ...meta,
+  };
 }

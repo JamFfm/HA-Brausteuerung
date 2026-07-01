@@ -7,29 +7,50 @@
 #
 # Die Helfer sind die alleinige Schnittstelle zwischen Custom Card und
 # Automationen (Single Source of Truth, siehe design.md "Data Models").
+#
+# -----------------------------------------------------------------------------
+# WICHTIG — Persistenz über Neustarts und Updates hinweg
+# -----------------------------------------------------------------------------
+# Home Assistant stellt den letzten Zustand eines Helfers beim Neustart nur dann
+# wieder her, wenn KEIN `initial:` gesetzt ist (restore_state-Mechanismus). Ist
+# `initial:` gesetzt, wird der Helfer bei JEDEM Neustart — und damit auch nach
+# einem HA- oder HA-OS-Update — auf diesen Initialwert ZURÜCKGESETZT.
+#
+# Deshalb sind die Helfer hier bewusst in zwei Gruppen geteilt:
+#
+#   1) Benutzerdaten / Konfiguration  → OHNE `initial:`  → bleiben erhalten:
+#        brau_rezept_json, brau_sensor_entity, brau_heater_entity,
+#        brau_sicherheits_offset, brau_hysterese
+#
+#   2) Prozess-/Laufzeitzustand       → MIT `initial:`   → Reset auf sicheren
+#      Ruhezustand bei jedem Neustart (kein automatisches Fortsetzen eines
+#      laufenden Brauvorgangs nach Neustart/Update):
+#        brau_status (idle), brau_aktuelle_stufe (0), brau_solltemperatur (0),
+#        timer.brau_raststufe
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # input_text — Rezept-JSON und konfigurierte Entitäten (max. 255 Zeichen)
+# Persistent: KEIN `initial:`, damit Rezept und Entitätsauswahl Neustarts und
+# Updates überdauern (restore_state).
 # -----------------------------------------------------------------------------
 input_text:
   brau_rezept_json:
     name: Brau Rezept JSON
     max: 255
-    initial: "[]"
 
   brau_sensor_entity:
     name: Brau Sensor Entity
     max: 255
-    initial: ""
 
   brau_heater_entity:
     name: Brau Heater Entity
     max: 255
-    initial: ""
 
 # -----------------------------------------------------------------------------
 # input_select — Betriebszustand der Brausteuerung
+# Laufzeitzustand: `initial: idle`, damit nach einem Neustart/Update KEIN
+# laufender Brauvorgang automatisch fortgesetzt wird (Sicherheit).
 # -----------------------------------------------------------------------------
 input_select:
   brau_status:
@@ -42,9 +63,10 @@ input_select:
     initial: idle
 
 # -----------------------------------------------------------------------------
-# input_number — aktive Stufe, Solltemperatur und Sicherheits-Offset
+# input_number — aktive Stufe, Solltemperatur, Sicherheits-Offset, Hysterese
 # -----------------------------------------------------------------------------
 input_number:
+  # Laufzeitzustand: Reset auf 0 bei Neustart (kein Fortsetzen).
   brau_aktuelle_stufe:
     name: Aktuelle Raststufe
     min: 0
@@ -53,6 +75,7 @@ input_number:
     initial: 0
     mode: box
 
+  # Laufzeitzustand: Reset auf 0 bei Neustart (kein Fortsetzen).
   brau_solltemperatur:
     name: Brau Solltemperatur
     min: 0
@@ -62,17 +85,31 @@ input_number:
     unit_of_measurement: "°C"
     mode: box
 
+  # Konfiguration: KEIN `initial:`, damit der eingestellte Offset erhalten
+  # bleibt. Default beim allerersten Anlegen: min (0 °C); bitte nach der
+  # Installation einmalig auf den gewünschten Wert (z. B. 10 °C) setzen.
   brau_sicherheits_offset:
     name: Brau Sicherheits-Offset
     min: 0
     max: 20
     step: 0.5
-    initial: 5
+    unit_of_measurement: "°C"
+    mode: box
+
+  # Konfiguration: KEIN `initial:`, damit das eingestellte Hystereseband
+  # erhalten bleibt. Default beim allerersten Anlegen: min (0,1 °C); die Card
+  # fällt bei fehlendem/ungültigem Wert auf 1,0 °C zurück.
+  brau_hysterese:
+    name: Brau Hysterese
+    min: 0.1
+    max: 5
+    step: 0.1
     unit_of_measurement: "°C"
     mode: box
 
 # -----------------------------------------------------------------------------
 # timer — Haltezeit-Timer der aktiven Raststufe
+# Laufzeitzustand: wird bei Neustart ohnehin nicht aktiv fortgesetzt.
 # -----------------------------------------------------------------------------
 timer:
   brau_raststufe:
