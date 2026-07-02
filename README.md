@@ -39,7 +39,7 @@ Die 5 Automationen in `automations.yaml`:
 |---|---|
 | `brausteuerung_raststufe` | Heizt auf, hält per Hysterese während der Haltezeit, wechselt die Stufe und schließt nach der letzten Rast ab. |
 | `brausteuerung_notaus` | Schaltet die Heizung aus und bricht den Timer ab, sobald der Status `running` verlässt (Stop). |
-| `brausteuerung_manueller_wechsel` | Durch die Card ausgelöst: bricht den Timer ab und springt zur nächsten Rast bzw. schließt bei der letzten Rast ab. |
+| `brausteuerung_manueller_wechsel` | Durch den Card-Button `⏭ Nächste Rast` (`input_button.brau_naechste_rast`) ausgelöst: wechselt phasenabhängig zur nächsten Rast (Haltephase: Timer beenden; Aufheizphase: Stufe erhöhen) bzw. schließt bei der letzten Rast ab. |
 | `brausteuerung_uebertemperatur` | Schaltet bei Übertemperatur die Heizung aus, setzt den Status auf `paused` und benachrichtigt. |
 | `brausteuerung_komm_verlust` | Schaltet bei Kommunikationsverlust zum Sensor die Heizung aus und benachrichtigt. |
 
@@ -87,7 +87,7 @@ nicht auflösen und die Karte bleibt leer.
 Gehe zu **Einstellungen → Dashboards → Ressourcen → Ressource hinzufügen** und
 trage ein:
 
-- **URL:** `/local/brausteuerung-card.js?v=2.2.0`
+- **URL:** `/local/brausteuerung-card.js?v=2.3.0`
 - **Typ:** `JavaScript-Modul` (`module`)
 
 > Das Verzeichnis `<config>/www/` ist in Home Assistant unter dem URL-Pfad
@@ -99,14 +99,14 @@ trage ein:
 > dass der Browser eine neue Card-Version nach einem Update zuverlässig lädt,
 > ohne dass der Cache manuell geleert werden muss (siehe Abschnitt
 > [Updates](#updates)). Die Version sollte mit der Konstante `VERSION` in
-> `brausteuerung-card.js` übereinstimmen (aktuell `2.2.0`).
+> `brausteuerung-card.js` übereinstimmen (aktuell `2.3.0`).
 
 ### 3. Helfer anlegen
 
 Übernimm die Einträge aus `configuration.yaml` in deine Home-Assistant-
 Konfiguration. Falls du bereits `input_text`-, `input_select`-, `input_number`-
 oder `timer`-Abschnitte hast, füge die Einträge dort ein (Domänenschlüssel nicht
-doppeln).
+doppeln). Neu ist außerdem ein `input_button`-Abschnitt.
 
 Folgende Helfer werden angelegt:
 
@@ -121,6 +121,7 @@ Folgende Helfer werden angelegt:
 | `brau_sicherheits_offset` | `input_number` | Sicherheits-Offset über der Solltemperatur in °C (0–20). Kein `initial:` (bleibt erhalten); nach Erstinstallation einmalig auf **10** setzen. Fallback in Card/Automation: **10**. |
 | `brau_hysterese` | `input_number` | Konfigurierbares Hystereseband unterhalb der Solltemperatur in °C (0,1–5). Kein `initial:` (bleibt erhalten); nach Erstinstallation einmalig auf **1,0** setzen. Fallback in Card/Automation: **1,0**. |
 | `brau_raststufe` | `timer` | Haltezeit-Timer der aktiven Raststufe. |
+| `brau_naechste_rast` | `input_button` | „Nächste Rast"-Taster; wird von der Card gedrückt, um manuell zur nächsten Rast zu wechseln. |
 
 Anschließend **Konfiguration prüfen und neu laden** bzw. Home Assistant neu
 starten: **Entwicklerwerkzeuge → YAML → Konfiguration prüfen**, danach die Helfer
@@ -189,7 +190,7 @@ Version der Card-Dateien die **Versionsnummer hochzählen** — an diesen Stelle
 die identisch gehalten werden müssen:
 
 1. In der Lovelace-Ressource die URL anpassen, z. B. von
-   `/local/brausteuerung-card.js?v=2.2.0` auf `?v=2.2.1`
+   `/local/brausteuerung-card.js?v=2.3.0` auf `?v=2.3.1`
    (**Einstellungen → Dashboards → Ressourcen**).
 2. In `www/brausteuerung-card.js` die Konstante `const VERSION = "…"` auf
    denselben Wert setzen. Diese Version wird auch intern an den Import des

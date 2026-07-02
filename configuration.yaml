@@ -115,3 +115,14 @@ timer:
   brau_raststufe:
     name: Rast-Timer
     duration: "00:00:00"
+
+# -----------------------------------------------------------------------------
+# input_button — „Nächste Rast"-Taster
+# Die Card „drückt" diesen Button (input_button.press), um manuell zur nächsten
+# Raststufe zu wechseln. Bewusst ein input_button (statuslos) statt eines
+# automation.trigger aus der Card, damit der breite call_service-Trigger der
+# Raststufen-Automation nicht mitfeuert. Kein `initial:` nötig (statuslos).
+# -----------------------------------------------------------------------------
+input_button:
+  brau_naechste_rast:
+    name: Brau Nächste Rast

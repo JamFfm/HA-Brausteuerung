@@ -42,6 +42,7 @@ const ENTITY = Object.freeze({
   SAFETY_OFFSET: "input_number.brau_sicherheits_offset",
   HYSTERESIS: "input_number.brau_hysterese",
   TIMER: "timer.brau_raststufe",
+  NAECHSTE_RAST_BUTTON: "input_button.brau_naechste_rast",
   AUTOMATION_RASTSTUFE: "automation.brausteuerung_raststufe",
   AUTOMATION_MANUELLER_WECHSEL: "automation.brausteuerung_manueller_wechsel",
 });
@@ -253,7 +254,7 @@ describe("_stop() — Brauprozess stoppen (Req 8.4)", () => {
 // 3. Prozesssteuerung: _nextStep (Req 8.5)
 // =============================================================================
 describe("_nextStep() — manueller Stufenwechsel (Req 8.5)", () => {
-  it("triggert die Automation brausteuerung_manueller_wechsel", () => {
+  it("drückt den Taster input_button.brau_naechste_rast", () => {
     const card = makeCard();
     const hass = makeHass();
     card.hass = hass;
@@ -261,8 +262,8 @@ describe("_nextStep() — manueller Stufenwechsel (Req 8.5)", () => {
     card._nextStep();
 
     expect(
-      findCall(hass.callService, "automation", "trigger", {
-        entity_id: ENTITY.AUTOMATION_MANUELLER_WECHSEL,
+      findCall(hass.callService, "input_button", "press", {
+        entity_id: ENTITY.NAECHSTE_RAST_BUTTON,
       })
     ).toBeTruthy();
     expect(hass.callService).toHaveBeenCalledTimes(1);

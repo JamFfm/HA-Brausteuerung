@@ -215,60 +215,80 @@
 - id: brausteuerung_manueller_wechsel
   alias: "Brausteuerung - Manueller Stufenwechsel"
   description: >
-    Durch die Card per automation.trigger ausgelöst: Timer abbrechen und zur
-    nächsten Raststufe wechseln bzw. bei der letzten Rast abschließen.
+    Ausgelöst durch den Card-Button (input_button.brau_naechste_rast): wechselt
+    manuell zur nächsten Raststufe — in der Haltephase durch Beenden des Timers,
+    in der Aufheizphase durch Erhöhen der Stufe. Auf der letzten Rast wird
+    abgeschlossen (Req 8.6, 8.7).
   mode: single
 
-  # Kein State-Trigger nötig — die Card stößt diese Automation direkt über
-  # automation.trigger an.
-  trigger: []
+  # Wird vom Card-Button ausgelöst (input_button.press). Bewusst KEIN
+  # automation.trigger durch die Card, damit der breite call_service-Trigger der
+  # Raststufen-Automation nicht mitfeuert und die laufende Rast neu startet.
+  trigger:
+    - platform: state
+      entity_id: input_button.brau_naechste_rast
+
+  condition:
+    # Nur während eines laufenden Brauprozesses wechseln.
+    - condition: state
+      entity_id: input_select.brau_status
+      state: "running"
 
   action:
-    # --- Laufenden Haltezeit-Timer abbrechen (Req 8.6) ---
-    - service: timer.cancel
-      target:
-        entity_id: timer.brau_raststufe
-
-    - variables:
-        rezept: "{{ states('input_text.brau_rezept_json') | from_json(default=[]) }}"
-        stufe_index: "{{ states('input_number.brau_aktuelle_stufe') | int(0) }}"
-        heater_entity: "{{ states('input_text.brau_heater_entity') }}"
-
     - choose:
         # ---------------------------------------------------------------
-        # Letzte Rast erreicht: Heizung aus, Status "done", Benachrichtigung
-        # (Req 8.7).
+        # Haltephase: Der Haltezeit-Timer läuft. Timer beenden -> die
+        # Raststufen-Automation verlässt ihre Halteschleife und wechselt bzw.
+        # schließt selbst ab (wie beim regulären Ablauf der Haltezeit). So wird
+        # die Stufe nur EINMAL erhöht (kein Doppelwechsel).
         # ---------------------------------------------------------------
         - conditions:
-            - condition: template
-              value_template: "{{ (stufe_index + 1) >= (rezept | length) }}"
+            - condition: state
+              entity_id: timer.brau_raststufe
+              state: "active"
           sequence:
-            - service: switch.turn_off
+            - service: timer.finish
               target:
-                entity_id: "{{ heater_entity }}"
-            - service: input_select.select_option
-              target:
-                entity_id: input_select.brau_status
-              data:
-                option: "done"
-            - service: persistent_notification.create
-              data:
-                title: "🍺 Brauprozess abgeschlossen!"
-                message: "Manueller Wechsel auf der letzten Raststufe — Brauprozess abgeschlossen."
+                entity_id: timer.brau_raststufe
 
       # -----------------------------------------------------------------
-      # Sonst: zur nächsten Raststufe wechseln und Raststufen-Automation
-      # erneut anstoßen (Req 8.6).
+      # Aufheizphase: kein aktiver Timer. Zur nächsten Rast wechseln bzw. bei
+      # der letzten Rast abschließen und die Raststufen-Automation neu anstoßen
+      # (Req 8.6, 8.7).
       # -----------------------------------------------------------------
       default:
-        - service: input_number.set_value
-          target:
-            entity_id: input_number.brau_aktuelle_stufe
-          data:
-            value: "{{ stufe_index + 1 }}"
-        - service: automation.trigger
-          target:
-            entity_id: automation.brausteuerung_raststufe
+        - variables:
+            rezept: "{{ states('input_text.brau_rezept_json') | from_json(default=[]) }}"
+            stufe_index: "{{ states('input_number.brau_aktuelle_stufe') | int(0) }}"
+            heater_entity: "{{ states('input_text.brau_heater_entity') }}"
+        - choose:
+            # Letzte Rast: Heizung aus, Status "done", Benachrichtigung (Req 8.7).
+            - conditions:
+                - condition: template
+                  value_template: "{{ (stufe_index + 1) >= (rezept | length) }}"
+              sequence:
+                - service: switch.turn_off
+                  target:
+                    entity_id: "{{ heater_entity }}"
+                - service: input_select.select_option
+                  target:
+                    entity_id: input_select.brau_status
+                  data:
+                    option: "done"
+                - service: persistent_notification.create
+                  data:
+                    title: "🍺 Brauprozess abgeschlossen!"
+                    message: "Manueller Wechsel auf der letzten Raststufe — Brauprozess abgeschlossen."
+          # Sonst: zur nächsten Rast wechseln und Raststufen-Automation anstoßen.
+          default:
+            - service: input_number.set_value
+              target:
+                entity_id: input_number.brau_aktuelle_stufe
+              data:
+                value: "{{ stufe_index + 1 }}"
+            - service: automation.trigger
+              target:
+                entity_id: automation.brausteuerung_raststufe
 
 # --- Automation 4: Übertemperaturschutz (Req 9.1, 9.2) ---
 # Parallele Sicherheits-Automation: Reagiert auf Änderungen des konfigurierten

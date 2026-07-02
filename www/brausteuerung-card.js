@@ -47,7 +47,7 @@ import {
   buildHistoryGraphConfig,
   DEFAULT_GRAPH_HOURS,
   Status,
-} from "./brausteuerung-logic.js?v=2.2.0";
+} from "./brausteuerung-logic.js?v=2.3.0";
 
 // ---------------------------------------------------------------------------
 // Versionierung / Cache-Busting (Req 11.5, 11.6)
@@ -61,7 +61,7 @@ import {
 // Der statische Import-Spezifizierer muss ein String-Literal sein; daher ist
 // die Versionsnummer dort fest eingetragen und MUSS bei einem Update gemeinsam
 // mit VERSION hochgezählt werden.
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 
 // LitElement-Basisklasse aus Home Assistant beziehen (kein externes CDN).
 const LitElement = Object.getPrototypeOf(customElements.get("ha-panel-lovelace"));
@@ -81,9 +81,10 @@ const ENTITY = Object.freeze({
   SAFETY_OFFSET: "input_number.brau_sicherheits_offset",
   HYSTERESIS: "input_number.brau_hysterese",
   TIMER: "timer.brau_raststufe",
+  // Taster (input_button), den die Card zum manuellen Stufenwechsel „drückt".
+  NAECHSTE_RAST_BUTTON: "input_button.brau_naechste_rast",
   // Automationen, die von der Card per `automation.trigger` ausgelöst werden.
   AUTOMATION_RASTSTUFE: "automation.brausteuerung_raststufe",
-  AUTOMATION_MANUELLER_WECHSEL: "automation.brausteuerung_manueller_wechsel",
 });
 
 // Key der Rezept-Bibliothek im HA-Benutzerspeicher (frontend user_data, Req 12.7).
@@ -987,14 +988,18 @@ class BrausteuerungCard extends LitElement {
   }
 
   /**
-   * Löst den manuellen Wechsel zur nächsten Raststufe aus (Req 8.5–8.7),
-   * indem die Automation `brausteuerung_manueller_wechsel` getriggert wird.
-   * Die Automation bricht den Timer ab und wechselt bzw. schließt ab.
+   * Manueller Stufenwechsel (Req 8.5–8.7): „drückt" den Taster
+   * `input_button.brau_naechste_rast`. Die Automation
+   * `brausteuerung_manueller_wechsel` reagiert darauf und wechselt phasenabhängig
+   * (Haltephase: Timer beenden; Aufheizphase: Stufe erhöhen) bzw. schließt bei
+   * der letzten Rast ab. Bewusst `input_button.press` statt `automation.trigger`,
+   * damit der breite Event-Trigger der Raststufen-Automation nicht mitfeuert und
+   * die laufende Rast neu startet.
    */
   _nextStep() {
     if (!this.hass) return;
-    this.hass.callService("automation", "trigger", {
-      entity_id: ENTITY.AUTOMATION_MANUELLER_WECHSEL,
+    this.hass.callService("input_button", "press", {
+      entity_id: ENTITY.NAECHSTE_RAST_BUTTON,
     });
   }
 
