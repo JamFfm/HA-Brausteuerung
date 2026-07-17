@@ -15,7 +15,15 @@ Bedienung erfolgt über eine Custom Lovelace Card.
 > Hardware-Schutz. Bitte lies vor der Inbetriebnahme den Abschnitt
 > [Wichtige Sicherheitshinweise](#-wichtige-sicherheitshinweise).
 
-<img src="BrausteuerungCard.png" alt="Die Brausteuerungs-Card in Home Assistant" width="400" />
+<table>
+  <tr>
+    <td rowspan="2"><img src="pics/BrausteuerungCard.png" alt="Die Brausteuerungs-Card in Home Assistant" width="400" /></td>
+    <td><img src="pics/Settings.png" alt="Einstellungen" width="400" /></td>
+  </tr>
+  <tr>
+    <td><img src="pics/Manage%20Recipes.png" alt="Rezepte verwalten" width="400" /></td>
+  </tr>
+</table>
 
 *So sieht die in Home Assistant eingebundene Brausteuerungs-Card aus.*
 
