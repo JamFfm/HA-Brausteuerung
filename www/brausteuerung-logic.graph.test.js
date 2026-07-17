@@ -186,13 +186,24 @@ describe('buildGraphModel — reines Geometriemodell (Req 13.1, 13.2)', () => {
 });
 
 describe('buildHistoryGraphConfig — native history-graph-Konfiguration (Req 13)', () => {
-  it('baut Ist- und Solltemperatur als Entitäten, Soll in Rot', () => {
+  it('baut Ist- und Solltemperatur als Entitäten, Soll in Rot (englische Default-Namen)', () => {
     const cfg = buildHistoryGraphConfig('sensor.brau_temp', 'input_number.brau_solltemperatur', 2);
     expect(cfg.type).toBe('history-graph');
     expect(cfg.hours_to_show).toBe(2);
     expect(cfg.entities).toEqual([
-      { entity: 'sensor.brau_temp', name: 'Ist-Temperatur' },
-      { entity: 'input_number.brau_solltemperatur', name: 'Solltemperatur', color: 'red' },
+      { entity: 'sensor.brau_temp', name: 'Actual temperature' },
+      { entity: 'input_number.brau_solltemperatur', name: 'Target temperature', color: 'red' },
+    ]);
+  });
+
+  it('übernimmt sprachabhängige Linien-Namen aus dem names-Parameter', () => {
+    const cfg = buildHistoryGraphConfig('sensor.x', 'input_number.y', 2, {
+      actual: 'Ist-Temperatur',
+      setpoint: 'Solltemperatur',
+    });
+    expect(cfg.entities).toEqual([
+      { entity: 'sensor.x', name: 'Ist-Temperatur' },
+      { entity: 'input_number.y', name: 'Solltemperatur', color: 'red' },
     ]);
   });
 
@@ -207,10 +218,69 @@ describe('buildHistoryGraphConfig — native history-graph-Konfiguration (Req 13
   it('nimmt nur Entitäten mit gültiger, nicht-leerer ID auf', () => {
     expect(buildHistoryGraphConfig('', '', 2).entities).toEqual([]);
     expect(buildHistoryGraphConfig('sensor.x', '', 2).entities).toEqual([
-      { entity: 'sensor.x', name: 'Ist-Temperatur' },
+      { entity: 'sensor.x', name: 'Actual temperature' },
     ]);
     expect(buildHistoryGraphConfig('   ', 'input_number.y', 2).entities).toEqual([
-      { entity: 'input_number.y', name: 'Solltemperatur', color: 'red' },
+      { entity: 'input_number.y', name: 'Target temperature', color: 'red' },
     ]);
+  });
+});
+
+import {
+  translate,
+  resolveLanguage,
+  resolveUnit,
+  DEFAULT_LANGUAGE,
+  SUPPORTED_LANGUAGES,
+  DEFAULT_UNIT,
+  SUPPORTED_UNITS,
+} from './brausteuerung-logic.js';
+
+describe('i18n — resolveLanguage / translate (Req 14)', () => {
+  it('resolveLanguage akzeptiert en/de, sonst Default en', () => {
+    expect(resolveLanguage('en')).toBe('en');
+    expect(resolveLanguage('de')).toBe('de');
+    expect(resolveLanguage('fr')).toBe(DEFAULT_LANGUAGE);
+    expect(resolveLanguage(undefined)).toBe(DEFAULT_LANGUAGE);
+    expect(DEFAULT_LANGUAGE).toBe('en');
+    expect(SUPPORTED_LANGUAGES).toEqual(['en', 'de']);
+  });
+
+  it('übersetzt Schlüssel in EN und DE', () => {
+    expect(translate('en', 'start')).toBe('▶ Start');
+    expect(translate('en', 'next_rest')).toBe('⏭ Next rest');
+    expect(translate('de', 'next_rest')).toBe('⏭ Nächste Rast');
+    expect(translate('en', 'settings_tt')).toBe('Settings');
+    expect(translate('de', 'settings_tt')).toBe('Einstellungen');
+  });
+
+  it('ersetzt Platzhalter über vars', () => {
+    expect(translate('en', 'safety_shutoff', { v: 77, unit: '°C' })).toBe('🛡 Safety shutoff at 77 °C');
+    expect(translate('en', 'safety_shutoff', { v: 170, unit: '°F' })).toBe('🛡 Safety shutoff at 170 °F');
+    expect(translate('de', 'rests_count', { n: 3 })).toBe('3 Rasten');
+    expect(translate('en', 'overwrite_confirm', { name: 'IPA' })).toBe(
+      'Recipe "IPA" already exists. Overwrite?'
+    );
+  });
+
+  it('ungültige Sprache fällt auf EN zurück; unbekannter Schlüssel bleibt der Schlüssel', () => {
+    expect(translate('fr', 'start')).toBe('▶ Start');
+    expect(translate('en', 'nicht_vorhanden')).toBe('nicht_vorhanden');
+  });
+});
+
+describe('i18n — resolveUnit (Req 15)', () => {
+  it('akzeptiert °C/°F, sonst Default °C', () => {
+    expect(resolveUnit('°C')).toBe('°C');
+    expect(resolveUnit('°F')).toBe('°F');
+    expect(resolveUnit('K')).toBe(DEFAULT_UNIT);
+    expect(resolveUnit(undefined)).toBe(DEFAULT_UNIT);
+    expect(DEFAULT_UNIT).toBe('°C');
+    expect(SUPPORTED_UNITS).toEqual(['°C', '°F']);
+  });
+
+  it('Einheit wird in Labels über {unit} eingesetzt', () => {
+    expect(translate('de', 'hysteresis_label', { unit: '°F' })).toBe('Hysterese (°F, > 0 bis 5)');
+    expect(translate('en', 'step_detail', { temp: 67, dur: 60, unit: '°F' })).toBe('67 °F · 60 min');
   });
 });

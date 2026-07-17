@@ -42,6 +42,8 @@ const ENTITY = Object.freeze({
   SAFETY_OFFSET: "input_number.brau_sicherheits_offset",
   HYSTERESIS: "input_number.brau_hysterese",
   TIMER: "timer.brau_raststufe",
+  LANGUAGE: "input_select.brau_language",
+  UNIT: "input_select.brau_unit",
   NAECHSTE_RAST_BUTTON: "input_button.brau_naechste_rast",
   AUTOMATION_RASTSTUFE: "automation.brausteuerung_raststufe",
   AUTOMATION_MANUELLER_WECHSEL: "automation.brausteuerung_manueller_wechsel",
@@ -118,6 +120,9 @@ function makeHass(stateOverrides = {}, callService = vi.fn(() => Promise.resolve
     [ENTITY.SENSOR_ENTITY]: { state: "sensor.brau_temp" },
     [ENTITY.HEATER_ENTITY]: { state: "switch.brau_heizung" },
     [ENTITY.TIMER]: { state: "idle" },
+    // Oberflächensprache: Für die bestehenden (deutschen) Render-Assertions wird
+    // im Mock Deutsch verwendet. Der App-Default ist Englisch (siehe i18n-Tests).
+    "input_select.brau_language": { state: "de" },
     "sensor.brau_temp": {
       state: "65.0",
       attributes: { unit_of_measurement: "°C" },
@@ -247,6 +252,55 @@ describe("_stop() — Brauprozess stoppen (Req 8.4)", () => {
       })
     ).toBeTruthy();
     expect(findCall(hass.callService, "timer", "cancel")).toBeTruthy();
+  });
+});
+
+// =============================================================================
+// 2b. Rezepteingabe: _addStep (Req 2.1)
+// =============================================================================
+describe("_addStep() — Raststufe hinzufügen (Req 2.1)", () => {
+  it("persistiert bei gültiger Eingabe das erweiterte Rezept (input_text.set_value)", () => {
+    const card = makeCard();
+    const hass = makeHass({ [ENTITY.RECIPE_JSON]: { state: "[]" } });
+    card.hass = hass;
+    // Eingabefelder stubben (kein echtes Shadow-DOM in der Testumgebung).
+    card._q = (sel) =>
+      ({
+        "#new-name": { value: "Maischen" },
+        "#new-temp": { value: "67" },
+        "#new-dur": { value: "60" },
+      }[sel] ?? null);
+
+    card._addStep();
+
+    const call = findCall(hass.callService, "input_text", "set_value", {
+      entity_id: ENTITY.RECIPE_JSON,
+    });
+    expect(call).toBeTruthy();
+    // Kompakt serialisiert: n/t/d.
+    const parsed = JSON.parse(call[2].value);
+    expect(parsed).toEqual([{ n: "Maischen", t: 67, d: 60 }]);
+  });
+
+  it("verwirft ungültige Eingaben (keine Persistenz, Fehlerhinweis)", () => {
+    const card = makeCard();
+    const hass = makeHass({ [ENTITY.RECIPE_JSON]: { state: "[]" } });
+    card.hass = hass;
+    card._q = (sel) =>
+      ({
+        "#new-name": { value: "" },
+        "#new-temp": { value: "200" }, // außerhalb 0–100
+        "#new-dur": { value: "60" },
+      }[sel] ?? null);
+
+    card._addStep();
+
+    expect(
+      findCall(hass.callService, "input_text", "set_value", {
+        entity_id: ENTITY.RECIPE_JSON,
+      })
+    ).toBeFalsy();
+    expect(card._errorMessage).not.toBe("");
   });
 });
 
@@ -1063,5 +1117,133 @@ describe("render() — Temperaturverlauf-Graph (Req 13)", () => {
 
     const out = card.render()._html;
     expect(out).toContain("Temperatursensor auswählen");
+  });
+});
+
+// =============================================================================
+// 20. Sprachumschaltung / i18n (Req 14)
+// =============================================================================
+describe("Sprache / i18n (Req 14)", () => {
+  it("Default ist Englisch, wenn kein Sprach-Helfer gesetzt ist", () => {
+    const card = makeCard();
+    // Sprach-Helfer bewusst entfernen -> Default en.
+    card.hass = makeHass({ "input_select.brau_language": undefined });
+    expect(card._lang).toBe("en");
+
+    const out = card.render()._html;
+    expect(out).toContain("Settings"); // ⚙️-Tooltip / Panel
+    expect(out).toContain("🍺 Brew Control");
+  });
+
+  it("zeigt englische Steuerungs-Buttons bei Sprache en", () => {
+    const card = makeCard();
+    card.hass = makeHass({
+      "input_select.brau_language": { state: "en" },
+      [ENTITY.STATUS]: { state: "running" },
+    });
+
+    const out = card.render()._html;
+    expect(out).toContain("⏭ Next rest");
+    expect(out).toContain("⏹ Stop");
+  });
+
+  it("zeigt deutsche Steuerungs-Buttons bei Sprache de", () => {
+    const card = makeCard();
+    card.hass = makeHass({
+      "input_select.brau_language": { state: "de" },
+      [ENTITY.STATUS]: { state: "running" },
+    });
+
+    const out = card.render()._html;
+    expect(out).toContain("⏭ Nächste Rast");
+  });
+
+  it("_setLanguage schreibt den Helfer input_select.brau_language", () => {
+    const card = makeCard();
+    const hass = makeHass();
+    card.hass = hass;
+
+    card._setLanguage("en");
+
+    expect(
+      findCall(hass.callService, "input_select", "select_option", {
+        entity_id: ENTITY.LANGUAGE,
+        option: "en",
+      })
+    ).toBeTruthy();
+  });
+
+  it("_setLanguage normalisiert ungültige Werte auf en", () => {
+    const card = makeCard();
+    const hass = makeHass();
+    card.hass = hass;
+
+    card._setLanguage("fr");
+
+    expect(
+      findCall(hass.callService, "input_select", "select_option", {
+        entity_id: ENTITY.LANGUAGE,
+        option: "en",
+      })
+    ).toBeTruthy();
+  });
+});
+
+// =============================================================================
+// 21. Temperatureinheit °C/°F (Req 15)
+// =============================================================================
+describe("Temperatureinheit (Req 15)", () => {
+  it("Default ist °C, wenn kein Einheiten-Helfer gesetzt ist", () => {
+    const card = makeCard();
+    card.hass = makeHass();
+    expect(card._unit).toBe("°C");
+  });
+
+  it("übernimmt °F aus dem Helfer und zeigt es in den Beschriftungen (ohne Umrechnung)", () => {
+    const card = makeCard();
+    card.hass = makeHass({
+      "input_select.brau_unit": { state: "°F" },
+      [ENTITY.HYSTERESIS]: { state: "2.0" },
+      "sensor.brau_temp": { state: "64.5", attributes: { unit_of_measurement: "°C" } },
+    });
+    expect(card._unit).toBe("°F");
+
+    const out = card.render()._html;
+    // Ist-Temperatur mit gewählter Einheit (Wert unverändert — keine Umrechnung).
+    expect(out).toContain("64.5 °F");
+    // Hysterese-Anzeige in °F.
+    expect(out).toContain("Hysterese: 2 °F");
+    // Keine °C-Beschriftung mehr sichtbar.
+    expect(out).not.toContain("°C");
+  });
+
+  it("_setUnit schreibt den Helfer input_select.brau_unit", () => {
+    const card = makeCard();
+    const hass = makeHass();
+    card.hass = hass;
+
+    card._setUnit("°F");
+
+    expect(
+      findCall(hass.callService, "input_select", "select_option", {
+        entity_id: ENTITY.UNIT,
+        option: "°F",
+      })
+    ).toBeTruthy();
+  });
+
+  it("_setUnit normalisiert ungültige Werte auf °C", () => {
+    const card = makeCard();
+    const hass = makeHass();
+    card.hass = hass;
+
+    card._setUnit("K");
+
+    expect(
+      findCall(hass.callService, "input_select", "select_option", {
+        entity_id: ENTITY.UNIT,
+        option: "°C",
+      })
+    ).toBeTruthy();
   });
 });
