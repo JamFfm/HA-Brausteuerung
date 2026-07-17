@@ -79,8 +79,10 @@
                 option: "done"
             - service: persistent_notification.create
               data:
-                title: "🍺 Brauprozess abgeschlossen!"
-                message: "Alle Raststufen wurden erfolgreich durchlaufen."
+                title: >-
+                  {% if states('input_select.brau_language') == 'de' %}🍺 Brauprozess abgeschlossen!{% else %}🍺 Brewing complete!{% endif %}
+                message: >-
+                  {% if states('input_select.brau_language') == 'de' %}Alle Raststufen wurden erfolgreich durchlaufen.{% else %}All rests have been completed successfully.{% endif %}
             - stop: "Brauprozess abgeschlossen"
 
       # -----------------------------------------------------------------
@@ -277,8 +279,10 @@
                     option: "done"
                 - service: persistent_notification.create
                   data:
-                    title: "🍺 Brauprozess abgeschlossen!"
-                    message: "Manueller Wechsel auf der letzten Raststufe — Brauprozess abgeschlossen."
+                    title: >-
+                      {% if states('input_select.brau_language') == 'de' %}🍺 Brauprozess abgeschlossen!{% else %}🍺 Brewing complete!{% endif %}
+                    message: >-
+                      {% if states('input_select.brau_language') == 'de' %}Manueller Wechsel auf der letzten Raststufe — Brauprozess abgeschlossen.{% else %}Manual advance on the last rest — brewing complete.{% endif %}
           # Sonst: zur nächsten Rast wechseln und Raststufen-Automation anstoßen.
           default:
             - service: input_number.set_value
@@ -355,12 +359,16 @@
     # --- Benachrichtigung mit Messwert und Schwellwert (Req 9.2) ---
     - service: persistent_notification.create
       data:
-        title: "🔥 Übertemperatur erkannt!"
+        title: >-
+          {% if states('input_select.brau_language') == 'de' %}🔥 Übertemperatur erkannt!{% else %}🔥 Over-temperature detected!{% endif %}
         message: >-
-          Die Ist-Temperatur ({{ ist_temp | round(1) }} °C) hat den
+          {% if states('input_select.brau_language') == 'de' %}Die Ist-Temperatur ({{ ist_temp | round(1) }} °C) hat den
           Sicherheitsschwellwert ({{ schwelle }} °C = Soll + Offset)
           überschritten. Die Heizung wurde ausgeschaltet und der Brauprozess
-          angehalten (paused). Bitte Anlage prüfen, bevor fortgesetzt wird.
+          angehalten (paused). Bitte Anlage prüfen, bevor fortgesetzt wird.{% else %}The actual temperature ({{ ist_temp | round(1) }} °C) has exceeded the
+          safety threshold ({{ schwelle }} °C = setpoint + offset). The heater
+          was switched off and the brewing process was paused. Please check the
+          system before continuing.{% endif %}
 
 # --- Automation 5: Kommunikationsverlust (Req 10.1, 10.2) ---
 # Parallele Sicherheits-Automation: Geht der Kontakt zur konfigurierten
@@ -417,9 +425,13 @@
     # --- Benachrichtigung über den Kommunikationsverlust (Req 10.2) ---
     - service: persistent_notification.create
       data:
-        title: "📡 Kommunikationsverlust zum Temperatursensor!"
+        title: >-
+          {% if states('input_select.brau_language') == 'de' %}📡 Kommunikationsverlust zum Temperatursensor!{% else %}📡 Communication loss with temperature sensor!{% endif %}
         message: >-
-          Der Temperatursensor ({{ sensor_entity }}) war für mind. 30 s nicht
+          {% if states('input_select.brau_language') == 'de' %}Der Temperatursensor ({{ sensor_entity }}) war für mind. 30 s nicht
           erreichbar (unavailable/unknown). Die Heizung wurde aus Sicherheits-
           gründen ausgeschaltet. Bitte Sensor und Verbindung prüfen, bevor der
-          Brauprozess fortgesetzt wird.
+          Brauprozess fortgesetzt wird.{% else %}The temperature sensor ({{ sensor_entity }}) was unreachable for at
+          least 30 s (unavailable/unknown). The heater was switched off for
+          safety reasons. Please check the sensor and connection before
+          continuing the brewing process.{% endif %}
