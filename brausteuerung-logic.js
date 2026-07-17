@@ -1128,6 +1128,23 @@ export function resolveLanguage(raw) {
   return SUPPORTED_LANGUAGES.includes(raw) ? raw : DEFAULT_LANGUAGE;
 }
 
+/** Unterstützte Temperatureinheiten (nur Anzeige, keine Umrechnung) — Req 15. @type {string[]} */
+export const SUPPORTED_UNITS = ['°C', '°F'];
+
+/** Standard-Temperatureinheit. @type {string} */
+export const DEFAULT_UNIT = '°C';
+
+/**
+ * Normalisiert einen (möglicherweise ungültigen) Einheitenwert auf `°C`/`°F`;
+ * fällt auf {@link DEFAULT_UNIT} zurück (Req 15). Es findet KEINE Umrechnung
+ * statt — die Einheit ist reine Beschriftung.
+ * @param {string|null|undefined} raw Rohwert (z. B. Helferzustand).
+ * @returns {string} '°C' oder '°F'.
+ */
+export function resolveUnit(raw) {
+  return SUPPORTED_UNITS.includes(raw) ? raw : DEFAULT_UNIT;
+}
+
 /**
  * Übersetzungstabelle. Jeder Schlüssel existiert in beiden Sprachen.
  * Platzhalter im Format `{name}` werden über `vars` ersetzt.
@@ -1142,9 +1159,9 @@ export const TRANSLATIONS = Object.freeze({
     // Status
     no_sensor: '⚠️ No sensor set',
     invalid_sensor: '⚠️ No valid sensor value',
-    safety_shutoff: '🛡 Safety shutoff at {v} °C',
+    safety_shutoff: '🛡 Safety shutoff at {v} {unit}',
     safety_shutoff_none: '🛡 Safety shutoff at —',
-    hysteresis_status: '🌡 Hysteresis: {v} °C',
+    hysteresis_status: '🌡 Hysteresis: {v} {unit}',
     status_idle: 'idle',
     status_running: 'running',
     status_paused: 'paused',
@@ -1181,7 +1198,7 @@ export const TRANSLATIONS = Object.freeze({
     cancel: '✕ Cancel',
     add_rest: '＋ Rest',
     close: '✕ Close',
-    step_detail: '{temp} °C · {dur} min',
+    step_detail: '{temp} {unit} · {dur} min',
     // Library
     manage_recipes_title: '📋 Manage recipes',
     no_saved_recipes: 'No saved recipes yet.',
@@ -1196,7 +1213,8 @@ export const TRANSLATIONS = Object.freeze({
     // Settings
     sensor_label: 'Temperature sensor',
     heater_label: 'Heater switch',
-    hysteresis_label: 'Hysteresis (°C, > 0 to 5)',
+    hysteresis_label: 'Hysteresis ({unit}, > 0 to 5)',
+    unit_label: 'Temperature unit',
     // Errors
     err_lib_load: 'Recipe library could not be loaded.',
     err_lib_save: 'Recipe library could not be saved.',
@@ -1222,9 +1240,9 @@ export const TRANSLATIONS = Object.freeze({
     language_tt: 'Sprache',
     no_sensor: '⚠️ Kein Sensor gesetzt',
     invalid_sensor: '⚠️ Kein gültiger Sensorwert',
-    safety_shutoff: '🛡 Sicherheitsabschaltung bei {v} °C',
+    safety_shutoff: '🛡 Sicherheitsabschaltung bei {v} {unit}',
     safety_shutoff_none: '🛡 Sicherheitsabschaltung bei —',
-    hysteresis_status: '🌡 Hysterese: {v} °C',
+    hysteresis_status: '🌡 Hysterese: {v} {unit}',
     status_idle: 'bereit',
     status_running: 'läuft',
     status_paused: 'pausiert',
@@ -1256,7 +1274,7 @@ export const TRANSLATIONS = Object.freeze({
     cancel: '✕ Abbrechen',
     add_rest: '＋ Rast',
     close: '✕ Schließen',
-    step_detail: '{temp} °C · {dur} min',
+    step_detail: '{temp} {unit} · {dur} min',
     manage_recipes_title: '📋 Rezepte verwalten',
     no_saved_recipes: 'Noch keine gespeicherten Rezepte.',
     rests_count: '{n} Rasten',
@@ -1269,7 +1287,8 @@ export const TRANSLATIONS = Object.freeze({
     overwrite_confirm: 'Rezept "{name}" existiert bereits. Überschreiben?',
     sensor_label: 'Temperatursensor',
     heater_label: 'Heizungs-Aktor',
-    hysteresis_label: 'Hysterese (°C, > 0 bis 5)',
+    hysteresis_label: 'Hysterese ({unit}, > 0 bis 5)',
+    unit_label: 'Temperatureinheit',
     err_lib_load: 'Rezept-Bibliothek konnte nicht geladen werden.',
     err_lib_save: 'Rezept-Bibliothek konnte nicht gespeichert werden.',
     err_enter_name: 'Bitte einen Namen für das Rezept eingeben.',

@@ -342,6 +342,9 @@
           {% set offset = states('input_number.brau_sicherheits_offset') | float(10) %}
           {% set offset = offset if (offset >= 0 and offset <= 20) else 10 %}
           {{ (states('input_number.brau_solltemperatur') | float(0) + offset) | round(1) }}
+        einheit: >-
+          {% set u = states('input_select.brau_unit') %}
+          {{ u if u in ['°C', '°F'] else '°C' }}
 
     # --- Heizung sofort ausschalten (Req 9.1) ---
     - service: switch.turn_off
@@ -362,11 +365,11 @@
         title: >-
           {% if states('input_select.brau_language') == 'de' %}🔥 Übertemperatur erkannt!{% else %}🔥 Over-temperature detected!{% endif %}
         message: >-
-          {% if states('input_select.brau_language') == 'de' %}Die Ist-Temperatur ({{ ist_temp | round(1) }} °C) hat den
-          Sicherheitsschwellwert ({{ schwelle }} °C = Soll + Offset)
+          {% if states('input_select.brau_language') == 'de' %}Die Ist-Temperatur ({{ ist_temp | round(1) }} {{ einheit }}) hat den
+          Sicherheitsschwellwert ({{ schwelle }} {{ einheit }} = Soll + Offset)
           überschritten. Die Heizung wurde ausgeschaltet und der Brauprozess
-          angehalten (paused). Bitte Anlage prüfen, bevor fortgesetzt wird.{% else %}The actual temperature ({{ ist_temp | round(1) }} °C) has exceeded the
-          safety threshold ({{ schwelle }} °C = setpoint + offset). The heater
+          angehalten (paused). Bitte Anlage prüfen, bevor fortgesetzt wird.{% else %}The actual temperature ({{ ist_temp | round(1) }} {{ einheit }}) has exceeded the
+          safety threshold ({{ schwelle }} {{ einheit }} = setpoint + offset). The heater
           was switched off and the brewing process was paused. Please check the
           system before continuing.{% endif %}
 

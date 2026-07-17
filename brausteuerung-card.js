@@ -47,9 +47,10 @@ import {
   buildHistoryGraphConfig,
   translate,
   resolveLanguage,
+  resolveUnit,
   DEFAULT_GRAPH_HOURS,
   Status,
-} from "./brausteuerung-logic.js?v=2.4.1";
+} from "./brausteuerung-logic.js?v=2.5.0";
 
 // ---------------------------------------------------------------------------
 // Versionierung / Cache-Busting (Req 11.5, 11.6)
@@ -63,7 +64,7 @@ import {
 // Der statische Import-Spezifizierer muss ein String-Literal sein; daher ist
 // die Versionsnummer dort fest eingetragen und MUSS bei einem Update gemeinsam
 // mit VERSION hochgezählt werden.
-const VERSION = "2.4.1";
+const VERSION = "2.5.0";
 
 // LitElement-Basisklasse aus Home Assistant beziehen (kein externes CDN).
 const LitElement = Object.getPrototypeOf(customElements.get("ha-panel-lovelace"));
@@ -85,6 +86,8 @@ const ENTITY = Object.freeze({
   TIMER: "timer.brau_raststufe",
   // Sprache der Oberfläche (Req 14): en / de.
   LANGUAGE: "input_select.brau_language",
+  // Temperatureinheit der Beschriftungen (Req 15): °C / °F (nur Anzeige).
+  UNIT: "input_select.brau_unit",
   // Taster (input_button), den die Card zum manuellen Stufenwechsel „drückt".
   NAECHSTE_RAST_BUTTON: "input_button.brau_naechste_rast",
   // Automationen, die von der Card per `automation.trigger` ausgelöst werden.
@@ -140,6 +143,7 @@ class BrausteuerungCard extends LitElement {
     this._graphCardSensor = null;
     this._graphCardHours = null;
     this._graphCardLang = null;
+    this._graphCardUnit = null;
     this._graphCardLoading = false;
   }
 
@@ -227,17 +231,19 @@ class BrausteuerungCard extends LitElement {
     if (!this._graphCard) return;
     const sensorChanged = this._configuredSensor !== this._graphCardSensor;
     const langChanged = this._lang !== this._graphCardLang;
+    const unitChanged = this._unit !== this._graphCardUnit;
     const desiredHours = this._effectiveGraphHours();
     const hoursChanged =
       !Number.isFinite(this._graphCardHours) ||
       Math.abs(desiredHours - this._graphCardHours) >= 1 / 60;
-    if (!sensorChanged && !langChanged && !hoursChanged) return;
+    if (!sensorChanged && !langChanged && !unitChanged && !hoursChanged) return;
     try {
       this._graphCard.setConfig(this._graphCardConfig());
       if (this.hass) this._graphCard.hass = this.hass;
       this._graphCardSensor = this._configuredSensor;
       this._graphCardHours = desiredHours;
       this._graphCardLang = this._lang;
+      this._graphCardUnit = this._unit;
     } catch (err) {
       // setConfig nicht möglich — bestehende Karte beibehalten.
     }
@@ -297,11 +303,15 @@ class BrausteuerungCard extends LitElement {
    * @returns {Object} history-graph-Kartenkonfiguration.
    */
   _graphCardConfig() {
+    const unit = this._unit;
     return buildHistoryGraphConfig(
       this._configuredSensor,
       ENTITY.SETPOINT,
       this._effectiveGraphHours(),
-      { actual: this._t("graph_actual"), setpoint: this._t("graph_setpoint") }
+      {
+        actual: `${this._t("graph_actual")} (${unit})`,
+        setpoint: `${this._t("graph_setpoint")} (${unit})`,
+      }
     );
   }
 
@@ -327,6 +337,7 @@ class BrausteuerungCard extends LitElement {
       this._graphCardSensor = this._configuredSensor;
       this._graphCardHours = this._effectiveGraphHours();
       this._graphCardLang = this._lang;
+      this._graphCardUnit = this._unit;
     } catch (err) {
       // history-graph konnte nicht erstellt werden — Platzhalter bleibt sichtbar.
     } finally {
@@ -577,6 +588,27 @@ class BrausteuerungCard extends LitElement {
    */
   _t(key, vars) {
     return translate(this._lang, key, vars);
+  }
+
+  /**
+   * Gewählte Temperatureinheit für die Beschriftungen (Req 15): aus dem Helfer
+   * `input_select.brau_unit`; Default `°C`. Reine Anzeige, keine Umrechnung.
+   * @returns {string} '°C' oder '°F'.
+   */
+  get _unit() {
+    return resolveUnit(this.hass?.states[ENTITY.UNIT]?.state);
+  }
+
+  /**
+   * Setzt die Temperatureinheit über den Helfer `input_select.brau_unit` (Req 15).
+   * @param {string} unit '°C' oder '°F'.
+   */
+  _setUnit(unit) {
+    if (!this.hass) return;
+    this.hass.callService("input_select", "select_option", {
+      entity_id: ENTITY.UNIT,
+      option: resolveUnit(unit),
+    });
   }
 
   /**
@@ -1738,11 +1770,11 @@ class BrausteuerungCard extends LitElement {
         <span class="temp-sensor-id">${this._configuredSensor}</span>
       `;
     } else {
-      // Req 1.1: gültige Ist-Temperatur anzeigen (inkl. Einheit, falls vorhanden).
+      // Req 1.1: gültige Ist-Temperatur anzeigen. Einheit ist die gewählte
+      // Anzeigeeinheit (Req 15 — reine Beschriftung, keine Umrechnung).
       const temp = this._currentTemp;
-      const unit = temp?.attributes?.unit_of_measurement ?? "°C";
       tempContent = html`
-        <span class="temp-value">${temp.state} ${unit}</span>
+        <span class="temp-value">${temp.state} ${this._unit}</span>
       `;
     }
 
@@ -1756,11 +1788,11 @@ class BrausteuerungCard extends LitElement {
       </div>
       <div class="status-threshold">
         ${Number.isFinite(threshold)
-          ? this._t("safety_shutoff", { v: threshold })
+          ? this._t("safety_shutoff", { v: threshold, unit: this._unit })
           : this._t("safety_shutoff_none")}
       </div>
       <div class="status-threshold">
-        ${this._t("hysteresis_status", { v: this._hysteresis })}
+        ${this._t("hysteresis_status", { v: this._hysteresis, unit: this._unit })}
       </div>
       ${this._renderCountdown()}
     `;
@@ -1972,7 +2004,7 @@ class BrausteuerungCard extends LitElement {
               min="0"
               max="100"
               step="0.5"
-              placeholder="°C"
+              placeholder=${this._unit}
               .value=${String(step.temperature ?? "")}
             />
             <input
@@ -2016,7 +2048,7 @@ class BrausteuerungCard extends LitElement {
         <span class="marker">${marker}</span>
         <span class="step-info">
           <span class="step-name">${step.name}</span>
-          <span class="step-detail">${this._t("step_detail", { temp: step.temperature, dur: step.duration })}</span>
+          <span class="step-detail">${this._t("step_detail", { temp: step.temperature, dur: step.duration, unit: this._unit })}</span>
         </span>
         <span class="step-actions">
           <button
@@ -2079,7 +2111,7 @@ class BrausteuerungCard extends LitElement {
           min="0"
           max="100"
           step="0.5"
-          placeholder="°C"
+          placeholder=${this._unit}
           ?disabled=${running}
         />
         <input
@@ -2150,7 +2182,7 @@ class BrausteuerungCard extends LitElement {
         </datalist>
 
         <label class="field-label" for="settings-hysteresis">
-          ${this._t("hysteresis_label")}
+          ${this._t("hysteresis_label", { unit: this._unit })}
         </label>
         <input
           id="settings-hysteresis"
@@ -2162,6 +2194,16 @@ class BrausteuerungCard extends LitElement {
           placeholder="1.0"
           .value=${String(this._hysteresis)}
         />
+
+        <label class="field-label" for="settings-unit">${this._t("unit_label")}</label>
+        <select
+          id="settings-unit"
+          class="field"
+          @change=${(e) => this._setUnit(e.target.value)}
+        >
+          <option value="°C" ?selected=${this._unit === "°C"}>°C</option>
+          <option value="°F" ?selected=${this._unit === "°F"}>°F</option>
+        </select>
 
         <div class="settings-actions">
           <button class="btn btn-primary" @click=${() => this._saveSettings()}>

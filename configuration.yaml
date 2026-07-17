@@ -73,6 +73,15 @@ input_select:
       - en
       - de
 
+  # Temperatureinheit für die Beschriftungen (Req 15). REINE Anzeige — es findet
+  # KEINE Umrechnung der Werte statt. Default °C (erste Option). Kein `initial:`,
+  # damit die Auswahl Neustarts/Updates überdauert (restore_state).
+  brau_unit:
+    name: Brau Temperature Unit
+    options:
+      - "°C"
+      - "°F"
+
 # -----------------------------------------------------------------------------
 # input_number — aktive Stufe, Solltemperatur, Sicherheits-Offset, Hysterese
 # -----------------------------------------------------------------------------
