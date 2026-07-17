@@ -21,7 +21,7 @@ Bedienung erfolgt über eine Custom Lovelace Card.
     <td><img src="pics/Settings.png" alt="Einstellungen" width="400" /></td>
   </tr>
   <tr>
-    <td><img src="pics/Manage%20Recipes.png" alt="Rezepte verwalten" width="400" style="background-color:#ffffff" /></td>
+    <td style="background-color:#ffffff"><img src="pics/Manage%20Recipes.png" alt="Rezepte verwalten" width="400" /></td>
   </tr>
 </table>
 
