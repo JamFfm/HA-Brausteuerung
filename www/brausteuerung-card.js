@@ -45,9 +45,12 @@ import {
   computeSafetyThreshold,
   clampGraphHours,
   buildHistoryGraphConfig,
+  translate,
+  resolveLanguage,
+  resolveUnit,
   DEFAULT_GRAPH_HOURS,
   Status,
-} from "./brausteuerung-logic.js?v=2.3.0";
+} from "./brausteuerung-logic.js?v=2.5.1";
 
 // ---------------------------------------------------------------------------
 // Versionierung / Cache-Busting (Req 11.5, 11.6)
@@ -61,7 +64,7 @@ import {
 // Der statische Import-Spezifizierer muss ein String-Literal sein; daher ist
 // die Versionsnummer dort fest eingetragen und MUSS bei einem Update gemeinsam
 // mit VERSION hochgezählt werden.
-const VERSION = "2.3.0";
+const VERSION = "2.5.1";
 
 // LitElement-Basisklasse aus Home Assistant beziehen (kein externes CDN).
 const LitElement = Object.getPrototypeOf(customElements.get("ha-panel-lovelace"));
@@ -81,6 +84,10 @@ const ENTITY = Object.freeze({
   SAFETY_OFFSET: "input_number.brau_sicherheits_offset",
   HYSTERESIS: "input_number.brau_hysterese",
   TIMER: "timer.brau_raststufe",
+  // Sprache der Oberfläche (Req 14): en / de.
+  LANGUAGE: "input_select.brau_language",
+  // Temperatureinheit der Beschriftungen (Req 15): °C / °F (nur Anzeige).
+  UNIT: "input_select.brau_unit",
   // Taster (input_button), den die Card zum manuellen Stufenwechsel „drückt".
   NAECHSTE_RAST_BUTTON: "input_button.brau_naechste_rast",
   // Automationen, die von der Card per `automation.trigger` ausgelöst werden.
@@ -135,6 +142,8 @@ class BrausteuerungCard extends LitElement {
     this._graphCard = null;
     this._graphCardSensor = null;
     this._graphCardHours = null;
+    this._graphCardLang = null;
+    this._graphCardUnit = null;
     this._graphCardLoading = false;
   }
 
@@ -221,18 +230,20 @@ class BrausteuerungCard extends LitElement {
   _syncGraphCard() {
     if (!this._graphCard) return;
     const sensorChanged = this._configuredSensor !== this._graphCardSensor;
+    const langChanged = this._lang !== this._graphCardLang;
+    const unitChanged = this._unit !== this._graphCardUnit;
     const desiredHours = this._effectiveGraphHours();
     const hoursChanged =
       !Number.isFinite(this._graphCardHours) ||
       Math.abs(desiredHours - this._graphCardHours) >= 1 / 60;
-    if (!sensorChanged && !hoursChanged) return;
+    if (!sensorChanged && !langChanged && !unitChanged && !hoursChanged) return;
     try {
-      this._graphCard.setConfig(
-        buildHistoryGraphConfig(this._configuredSensor, ENTITY.SETPOINT, desiredHours)
-      );
+      this._graphCard.setConfig(this._graphCardConfig());
       if (this.hass) this._graphCard.hass = this.hass;
       this._graphCardSensor = this._configuredSensor;
       this._graphCardHours = desiredHours;
+      this._graphCardLang = this._lang;
+      this._graphCardUnit = this._unit;
     } catch (err) {
       // setConfig nicht möglich — bestehende Karte beibehalten.
     }
@@ -292,10 +303,15 @@ class BrausteuerungCard extends LitElement {
    * @returns {Object} history-graph-Kartenkonfiguration.
    */
   _graphCardConfig() {
+    const unit = this._unit;
     return buildHistoryGraphConfig(
       this._configuredSensor,
       ENTITY.SETPOINT,
-      this._effectiveGraphHours()
+      this._effectiveGraphHours(),
+      {
+        actual: `${this._t("graph_actual")} (${unit})`,
+        setpoint: `${this._t("graph_setpoint")} (${unit})`,
+      }
     );
   }
 
@@ -320,6 +336,8 @@ class BrausteuerungCard extends LitElement {
       this._graphCard = el;
       this._graphCardSensor = this._configuredSensor;
       this._graphCardHours = this._effectiveGraphHours();
+      this._graphCardLang = this._lang;
+      this._graphCardUnit = this._unit;
     } catch (err) {
       // history-graph konnte nicht erstellt werden — Platzhalter bleibt sichtbar.
     } finally {
@@ -424,7 +442,7 @@ class BrausteuerungCard extends LitElement {
       this._libraryLoaded = true;
     } catch (err) {
       // Benutzerspeicher nicht verfügbar: letzten Zustand behalten (Req 12.10).
-      this._setError("Rezept-Bibliothek konnte nicht geladen werden.");
+      this._setError(this._t("err_lib_load"));
     }
   }
 
@@ -440,7 +458,7 @@ class BrausteuerungCard extends LitElement {
   async _persistLibrary(library) {
     const conn = this.hass?.connection;
     if (!conn || typeof conn.sendMessagePromise !== "function") {
-      this._setError("Rezept-Bibliothek konnte nicht gespeichert werden.");
+      this._setError(this._t("err_lib_save"));
       return false;
     }
     try {
@@ -454,7 +472,7 @@ class BrausteuerungCard extends LitElement {
       if (this._errorMessage) this._errorMessage = "";
       return true;
     } catch (err) {
-      this._setError("Rezept-Bibliothek konnte nicht gespeichert werden.");
+      this._setError(this._t("err_lib_save"));
       return false;
     }
   }
@@ -473,7 +491,7 @@ class BrausteuerungCard extends LitElement {
   async _saveRecipeToLibrary(name, confirmOverwrite = false) {
     const trimmed = (name ?? "").trim();
     if (trimmed === "") {
-      this._setError("Bitte einen Namen für das Rezept eingeben.");
+      this._setError(this._t("err_enter_name"));
       return { ok: false };
     }
     const exists = !!findRecipe(this._library, trimmed);
@@ -502,14 +520,12 @@ class BrausteuerungCard extends LitElement {
     }
     const recipe = findRecipe(this._library, name);
     if (!recipe) {
-      this._setError("Rezept nicht gefunden.");
+      this._setError(this._t("err_recipe_not_found"));
       return false;
     }
     const steps = Array.isArray(recipe.steps) ? recipe.steps : [];
     if (!canPersistRecipe(steps)) {
-      this._setError(
-        "Rezept zu groß für den aktiven Speicher (max. 255 Zeichen). Bitte kürzen."
-      );
+      this._setError(this._t("err_recipe_too_large_load"));
       return false;
     }
     return this._persistRecipe(steps);
@@ -553,6 +569,60 @@ class BrausteuerungCard extends LitElement {
   /** @returns {string} Aktueller Betriebsstatus (idle/running/paused/done). */
   get _status() {
     return this.hass?.states[ENTITY.STATUS]?.state ?? "idle";
+  }
+
+  /**
+   * Aktuelle Oberflächensprache (Req 14): aus dem Helfer
+   * `input_select.brau_language`; Default Englisch bei fehlendem/ungültigem Wert.
+   * @returns {string} 'en' oder 'de'.
+   */
+  get _lang() {
+    return resolveLanguage(this.hass?.states[ENTITY.LANGUAGE]?.state);
+  }
+
+  /**
+   * Übersetzt einen Schlüssel in die aktuelle Oberflächensprache (Req 14).
+   * @param {string} key Übersetzungsschlüssel.
+   * @param {Object<string,(string|number)>} [vars] Platzhalterwerte.
+   * @returns {string} Übersetzter Text.
+   */
+  _t(key, vars) {
+    return translate(this._lang, key, vars);
+  }
+
+  /**
+   * Gewählte Temperatureinheit für die Beschriftungen (Req 15): aus dem Helfer
+   * `input_select.brau_unit`; Default `°C`. Reine Anzeige, keine Umrechnung.
+   * @returns {string} '°C' oder '°F'.
+   */
+  get _unit() {
+    return resolveUnit(this.hass?.states[ENTITY.UNIT]?.state);
+  }
+
+  /**
+   * Setzt die Temperatureinheit über den Helfer `input_select.brau_unit` (Req 15).
+   * @param {string} unit '°C' oder '°F'.
+   */
+  _setUnit(unit) {
+    if (!this.hass) return;
+    this.hass.callService("input_select", "select_option", {
+      entity_id: ENTITY.UNIT,
+      option: resolveUnit(unit),
+    });
+  }
+
+  /**
+   * Setzt die Oberflächensprache über den Helfer `input_select.brau_language`
+   * (Req 14). Wirkt sofort auf die Card und — da der Helfer die Single Source of
+   * Truth ist — auch auf die Benachrichtigungstexte der Automationen.
+   * @param {string} lang Sprachcode ('en'/'de').
+   */
+  _setLanguage(lang) {
+    if (!this.hass) return;
+    this.hass.callService("input_select", "select_option", {
+      entity_id: ENTITY.LANGUAGE,
+      option: resolveLanguage(lang),
+    });
   }
 
   /** @returns {number} Index der aktuell aktiven Raststufe. */
@@ -733,9 +803,7 @@ class BrausteuerungCard extends LitElement {
    */
   _persistRecipe(recipe) {
     if (!canPersistRecipe(recipe)) {
-      this._setError(
-        "Rezept zu groß (max. 255 Zeichen). Bitte kürzere Namen oder weniger Rasten verwenden."
-      );
+      this._setError(this._t("err_recipe_too_large"));
       return false;
     }
     this._errorMessage = "";
@@ -815,9 +883,7 @@ class BrausteuerungCard extends LitElement {
     const temperature = Number(temp);
     const duration = Number(dur);
     if (!isValidRaststufe(name, temperature, duration)) {
-      this._setError(
-        "Ungültige Eingabe: Solltemperatur muss 0–100 °C sein, Haltezeit eine ganze Zahl > 0 Minuten."
-      );
+      this._setError(this._t("err_invalid_step_add"));
       return;
     }
     const resolvedName = resolveStepName(name, this._recipe.length + 1);
@@ -868,9 +934,7 @@ class BrausteuerungCard extends LitElement {
     const temperature = Number(temp);
     const duration = Number(dur);
     if (!isValidRaststufe(name, temperature, duration)) {
-      this._setError(
-        "Ungültige Eingabe: Änderung verworfen. Solltemperatur 0–100 °C, Haltezeit ganze Zahl > 0."
-      );
+      this._setError(this._t("err_invalid_step_edit"));
       return;
     }
     const resolvedName = resolveStepName(name, i + 1);
@@ -1017,14 +1081,14 @@ class BrausteuerungCard extends LitElement {
     if (!this.hass) return;
     const heater = this._configuredHeater;
     if (!heater) {
-      this._setError("Kein Heizungs-Aktor gesetzt.");
+      this._setError(this._t("err_no_heater"));
       return;
     }
     const service = this._isHeaterOn ? "turn_off" : "turn_on";
     try {
       this.hass.callService("switch", service, { entity_id: heater });
     } catch (err) {
-      this._setError("Schalten des Heizungs-Aktors fehlgeschlagen.");
+      this._setError(this._t("err_heater_toggle"));
     }
   }
 
@@ -1044,9 +1108,7 @@ class BrausteuerungCard extends LitElement {
     if (!this.hass) return false;
     const num = typeof value === "string" ? Number(value) : value;
     if (!isValidHysteresis(num)) {
-      this._setError(
-        "Ungültige Hysterese: bitte einen Wert größer als 0 °C bis maximal 5 °C eingeben."
-      );
+      this._setError(this._t("err_invalid_hysteresis"));
       return false;
     }
     this._errorMessage = "";
@@ -1119,9 +1181,7 @@ class BrausteuerungCard extends LitElement {
         return;
       } catch (err) {
         // Fehlschlag: lokalen Wert behalten, Hinweis anzeigen, erneut versuchen.
-        this._setError(
-          "Speichern der Entitätsauswahl fehlgeschlagen. Auswahl bleibt erhalten, neuer Versuch läuft…"
-        );
+        this._setError(this._t("err_entity_save_retry"));
         await new Promise((resolve) =>
           setTimeout(resolve, PERSIST_RETRY_DELAY_MS)
         );
@@ -1149,6 +1209,15 @@ class BrausteuerungCard extends LitElement {
         display: flex;
         align-items: center;
         gap: 4px;
+      }
+      .lang-select {
+        padding: 2px 4px;
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 4px;
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #000);
+        font-size: 0.8em;
+        cursor: pointer;
       }
       .placeholder {
         color: var(--secondary-text-color);
@@ -1416,6 +1485,12 @@ class BrausteuerungCard extends LitElement {
       .field {
         width: 100%;
         margin-top: 4px;
+        box-sizing: border-box;
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 4px;
+        padding: 6px 8px;
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #000);
       }
 
       /* Temperaturverlauf-Graph (Req 13) */
@@ -1529,18 +1604,26 @@ class BrausteuerungCard extends LitElement {
     return html`
       <ha-card>
         <div class="header">
-          <h2>🍺 Brausteuerung</h2>
+          <h2>${this._t("app_title")}</h2>
           <div class="header-actions">
+            <select
+              class="lang-select"
+              title=${this._t("language_tt")}
+              @change=${(e) => this._setLanguage(e.target.value)}
+            >
+              <option value="en" ?selected=${this._lang === "en"}>EN</option>
+              <option value="de" ?selected=${this._lang === "de"}>DE</option>
+            </select>
             <button
               class="icon-btn"
-              title="Rezepte verwalten"
+              title=${this._t("manage_recipes_tt")}
               @click=${() => this._toggleLibrary()}
             >
               📋
             </button>
             <button
               class="icon-btn"
-              title="Einstellungen"
+              title=${this._t("settings_tt")}
               @click=${() => this._toggleSettings()}
             >
               ⚙️
@@ -1580,10 +1663,10 @@ class BrausteuerungCard extends LitElement {
     const library = Array.isArray(this._library) ? this._library : [];
     return html`
       <div class="settings">
-        <h3>📋 Rezepte verwalten</h3>
+        <h3>${this._t("manage_recipes_title")}</h3>
 
         ${library.length === 0
-          ? html`<div class="placeholder">Noch keine gespeicherten Rezepte.</div>`
+          ? html`<div class="placeholder">${this._t("no_saved_recipes")}</div>`
           : html`
               <ul class="steps">
                 ${library.map(
@@ -1591,20 +1674,20 @@ class BrausteuerungCard extends LitElement {
                     <li class="step">
                       <span class="step-info">
                         <span class="step-name">${r.name}</span>
-                        <span class="step-detail">${(r.steps || []).length} Rasten</span>
+                        <span class="step-detail">${this._t("rests_count", { n: (r.steps || []).length })}</span>
                       </span>
                       <span class="step-actions">
                         <button
                           class="btn btn-primary btn-s"
-                          title="Als aktives Rezept laden"
+                          title=${this._t("load_recipe_tt")}
                           ?disabled=${running}
                           @click=${() => this._loadRecipeFromLibrary(r.name)}
                         >
-                          📥 Laden
+                          ${this._t("load")}
                         </button>
                         <button
                           class="btn btn-danger btn-s"
-                          title="Aus Bibliothek löschen"
+                          title=${this._t("delete_from_library_tt")}
                           @click=${() => this._deleteRecipeFromLibrary(r.name)}
                         >
                           🗑
@@ -1617,13 +1700,13 @@ class BrausteuerungCard extends LitElement {
             `}
 
         <label class="field-label" for="library-name">
-          Aktuelles Rezept speichern unter…
+          ${this._t("save_current_as")}
         </label>
         <input
           id="library-name"
           class="field"
           type="text"
-          placeholder="z. B. Helles"
+          placeholder=${this._t("recipe_name_placeholder")}
         />
         <div class="settings-actions">
           <button
@@ -1631,10 +1714,10 @@ class BrausteuerungCard extends LitElement {
             ?disabled=${running}
             @click=${() => this._onSaveRecipeClick()}
           >
-            💾 Speichern unter…
+            ${this._t("save_as")}
           </button>
           <button class="btn" @click=${() => this._toggleLibrary()}>
-            ✕ Schließen
+            ${this._t("close")}
           </button>
         </div>
       </div>
@@ -1652,7 +1735,7 @@ class BrausteuerungCard extends LitElement {
     const res = await this._saveRecipeToLibrary(name, false);
     if (res.needsConfirm) {
       const ok = typeof window !== "undefined" && typeof window.confirm === "function"
-        ? window.confirm(`Rezept "${name.trim()}" existiert bereits. Überschreiben?`)
+        ? window.confirm(this._t("overwrite_confirm", { name: name.trim() }))
         : true;
       if (ok) {
         await this._saveRecipeToLibrary(name, true);
@@ -1684,20 +1767,20 @@ class BrausteuerungCard extends LitElement {
     if (!this._configuredSensor) {
       // Req 1.4: keine Sensor-Entität ausgewählt.
       tempContent = html`
-        <span class="temp-hint">⚠️ Kein Sensor gesetzt</span>
+        <span class="temp-hint">${this._t("no_sensor")}</span>
       `;
     } else if (!this._isSensorValid) {
       // Req 1.3: Sensor liefert unknown/unavailable/nicht-numerisch.
       tempContent = html`
-        <span class="temp-hint">⚠️ Kein gültiger Sensorwert</span>
+        <span class="temp-hint">${this._t("invalid_sensor")}</span>
         <span class="temp-sensor-id">${this._configuredSensor}</span>
       `;
     } else {
-      // Req 1.1: gültige Ist-Temperatur anzeigen (inkl. Einheit, falls vorhanden).
+      // Req 1.1: gültige Ist-Temperatur anzeigen. Einheit ist die gewählte
+      // Anzeigeeinheit (Req 15 — reine Beschriftung, keine Umrechnung).
       const temp = this._currentTemp;
-      const unit = temp?.attributes?.unit_of_measurement ?? "°C";
       tempContent = html`
-        <span class="temp-value">${temp.state} ${unit}</span>
+        <span class="temp-value">${temp.state} ${this._unit}</span>
       `;
     }
 
@@ -1706,16 +1789,16 @@ class BrausteuerungCard extends LitElement {
         <div class="status-temp">${tempContent}</div>
         <div class="status-right">
           ${this._renderHeaterState()}
-          <span class="status-badge status-${status}">${status}</span>
+          <span class="status-badge status-${status}">${this._t("status_" + status)}</span>
         </div>
       </div>
       <div class="status-threshold">
         ${Number.isFinite(threshold)
-          ? html`🛡 Sicherheitsabschaltung bei ${threshold} °C`
-          : html`🛡 Sicherheitsabschaltung bei —`}
+          ? this._t("safety_shutoff", { v: threshold, unit: this._unit })
+          : this._t("safety_shutoff_none")}
       </div>
       <div class="status-threshold">
-        🌡 Hysterese: ${this._hysteresis} °C
+        ${this._t("hysteresis_status", { v: this._hysteresis, unit: this._unit })}
       </div>
       ${this._renderCountdown()}
     `;
@@ -1738,10 +1821,12 @@ class BrausteuerungCard extends LitElement {
     return html`
       <button
         class="heater-toggle ${on ? "on" : "off"}"
-        title=${on ? "Heizung ausschalten" : "Heizung einschalten"}
+        title=${on ? this._t("heater_turn_off_tt") : this._t("heater_turn_on_tt")}
         @click=${() => this._toggleHeater()}
       >
-        ${on ? html`<span class="flame">🔥</span> AN` : html`AUS`}
+        ${on
+          ? html`<span class="flame">🔥</span> ${this._t("heater_on")}`
+          : html`${this._t("heater_off")}`}
       </button>
     `;
   }
@@ -1761,7 +1846,7 @@ class BrausteuerungCard extends LitElement {
     const ss = remaining % 60;
     const formatted = `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
     return html`
-      <div class="status-countdown">⏱ Verbleibende Haltezeit: ${formatted}</div>
+      <div class="status-countdown">${this._t("remaining_hold", { v: formatted })}</div>
     `;
   }
 
@@ -1781,9 +1866,9 @@ class BrausteuerungCard extends LitElement {
 
     const hoursSelector = html`
       <div class="graph-header">
-        <span class="graph-title">📈 Temperaturverlauf</span>
+        <span class="graph-title">${this._t("graph_title")}</span>
         <label class="graph-hours-label">
-          Dauer:
+          ${this._t("duration")}
           <select
             class="graph-hours"
             @change=${(e) => this._setGraphHours(e.target.value)}
@@ -1798,14 +1883,12 @@ class BrausteuerungCard extends LitElement {
 
     let body;
     if (!this._configuredSensor) {
-      body = html`<div class="placeholder">
-        Bitte zuerst über ⚙️ einen Temperatursensor auswählen.
-      </div>`;
+      body = html`<div class="placeholder">${this._t("select_sensor_first")}</div>`;
     } else if (this._graphCard) {
       // Das eingebettete Karten-Element direkt rendern (Lit akzeptiert DOM-Nodes).
       body = this._graphCard;
     } else {
-      body = html`<div class="placeholder">Lade Temperaturverlauf…</div>`;
+      body = html`<div class="placeholder">${this._t("loading_graph")}</div>`;
     }
 
     return html`
@@ -1834,10 +1917,10 @@ class BrausteuerungCard extends LitElement {
       return html`
         <div class="controls">
           <button class="btn btn-primary" @click=${() => this._nextStep()}>
-            ⏭ Nächste Rast
+            ${this._t("next_rest")}
           </button>
           <button class="btn btn-danger" @click=${() => this._stop()}>
-            ⏹ Stop
+            ${this._t("stop")}
           </button>
         </div>
       `;
@@ -1849,12 +1932,10 @@ class BrausteuerungCard extends LitElement {
         <button
           class="btn btn-primary"
           ?disabled=${startDisabled}
-          title=${startDisabled
-            ? "Start benötigt mindestens eine Rast und einen gültigen Sensorwert."
-            : "Brauprozess starten"}
+          title=${startDisabled ? this._t("start_disabled_tt") : this._t("start_tt")}
           @click=${() => this._start()}
         >
-          ▶ Start
+          ${this._t("start")}
         </button>
       </div>
     `;
@@ -1874,7 +1955,7 @@ class BrausteuerungCard extends LitElement {
     return html`
       <div class="recipe">
         ${recipe.length === 0
-          ? html`<div class="placeholder">Noch keine Raststufen. Unten eine Rast hinzufügen.</div>`
+          ? html`<div class="placeholder">${this._t("no_rests")}</div>`
           : html`
               <ol class="steps">
                 ${recipe.map((step, i) => this._renderStep(step, i, running, active, showMarkers, recipe.length))}
@@ -1892,7 +1973,7 @@ class BrausteuerungCard extends LitElement {
                 ?disabled=${running}
                 @click=${() => this._clear()}
               >
-                🗑 Alle löschen
+                ${this._t("clear_all")}
               </button>
             </div>
           `
@@ -1920,7 +2001,7 @@ class BrausteuerungCard extends LitElement {
             <input
               id="edit-name"
               type="text"
-              placeholder="Name (optional)"
+              placeholder=${this._t("name_optional")}
               .value=${step.name ?? ""}
             />
             <input
@@ -1929,7 +2010,7 @@ class BrausteuerungCard extends LitElement {
               min="0"
               max="100"
               step="0.5"
-              placeholder="°C"
+              placeholder=${this._unit}
               .value=${String(step.temperature ?? "")}
             />
             <input
@@ -1943,10 +2024,10 @@ class BrausteuerungCard extends LitElement {
           </div>
           <div class="edit-actions">
             <button class="btn btn-primary" @click=${() => this._saveEdit(i)}>
-              ✓ Speichern
+              ${this._t("save")}
             </button>
             <button class="btn" @click=${() => this._cancelEdit()}>
-              ✕ Abbrechen
+              ${this._t("cancel")}
             </button>
           </div>
         </li>
@@ -1973,12 +2054,12 @@ class BrausteuerungCard extends LitElement {
         <span class="marker">${marker}</span>
         <span class="step-info">
           <span class="step-name">${step.name}</span>
-          <span class="step-detail">${step.temperature} °C · ${step.duration} min</span>
+          <span class="step-detail">${this._t("step_detail", { temp: step.temperature, dur: step.duration, unit: this._unit })}</span>
         </span>
         <span class="step-actions">
           <button
             class="icon-btn"
-            title="Nach oben"
+            title=${this._t("move_up_tt")}
             ?disabled=${running || i === 0}
             @click=${() => this._moveStep(i, -1)}
           >
@@ -1986,7 +2067,7 @@ class BrausteuerungCard extends LitElement {
           </button>
           <button
             class="icon-btn"
-            title="Nach unten"
+            title=${this._t("move_down_tt")}
             ?disabled=${running || i === total - 1}
             @click=${() => this._moveStep(i, 1)}
           >
@@ -1994,7 +2075,7 @@ class BrausteuerungCard extends LitElement {
           </button>
           <button
             class="icon-btn"
-            title="Bearbeiten"
+            title=${this._t("edit_tt")}
             ?disabled=${running}
             @click=${() => this._beginEdit(i)}
           >
@@ -2002,7 +2083,7 @@ class BrausteuerungCard extends LitElement {
           </button>
           <button
             class="icon-btn"
-            title="Löschen"
+            title=${this._t("delete_tt")}
             ?disabled=${running}
             @click=${() => this._remove(i)}
           >
@@ -2027,7 +2108,7 @@ class BrausteuerungCard extends LitElement {
         <input
           id="new-name"
           type="text"
-          placeholder="Name (optional)"
+          placeholder=${this._t("name_optional")}
           ?disabled=${running}
         />
         <input
@@ -2036,7 +2117,7 @@ class BrausteuerungCard extends LitElement {
           min="0"
           max="100"
           step="0.5"
-          placeholder="°C"
+          placeholder=${this._unit}
           ?disabled=${running}
         />
         <input
@@ -2052,7 +2133,7 @@ class BrausteuerungCard extends LitElement {
           ?disabled=${running}
           @click=${() => this._addStep()}
         >
-          ＋ Rast
+          ${this._t("add_rest")}
         </button>
       </div>
     `;
@@ -2078,9 +2159,9 @@ class BrausteuerungCard extends LitElement {
 
     return html`
       <div class="settings">
-        <h3>Einstellungen</h3>
+        <h3>${this._t("settings_tt")}</h3>
 
-        <label class="field-label" for="settings-sensor">Temperatursensor</label>
+        <label class="field-label" for="settings-sensor">${this._t("sensor_label")}</label>
         <input
           id="settings-sensor"
           class="field"
@@ -2093,7 +2174,7 @@ class BrausteuerungCard extends LitElement {
           ${sensorIds.map((id) => html`<option value=${id}></option>`)}
         </datalist>
 
-        <label class="field-label" for="settings-heater">Heizungs-Aktor</label>
+        <label class="field-label" for="settings-heater">${this._t("heater_label")}</label>
         <input
           id="settings-heater"
           class="field"
@@ -2107,7 +2188,7 @@ class BrausteuerungCard extends LitElement {
         </datalist>
 
         <label class="field-label" for="settings-hysteresis">
-          Hysterese (°C, &gt; 0 bis 5)
+          ${this._t("hysteresis_label", { unit: this._unit })}
         </label>
         <input
           id="settings-hysteresis"
@@ -2120,12 +2201,22 @@ class BrausteuerungCard extends LitElement {
           .value=${String(this._hysteresis)}
         />
 
+        <label class="field-label" for="settings-unit">${this._t("unit_label")}</label>
+        <select
+          id="settings-unit"
+          class="field"
+          @change=${(e) => this._setUnit(e.target.value)}
+        >
+          <option value="°C" ?selected=${this._unit === "°C"}>°C</option>
+          <option value="°F" ?selected=${this._unit === "°F"}>°F</option>
+        </select>
+
         <div class="settings-actions">
           <button class="btn btn-primary" @click=${() => this._saveSettings()}>
-            ✓ Speichern
+            ${this._t("save")}
           </button>
           <button class="btn" @click=${() => this._toggleSettings()}>
-            ✕ Schließen
+            ${this._t("close")}
           </button>
         </div>
       </div>
@@ -2146,21 +2237,26 @@ class BrausteuerungCardEditor extends LitElement {
     this._config = config || {};
   }
 
+  /** @returns {string} Oberflächensprache aus dem Helfer (Default en). */
+  get _lang() {
+    return resolveLanguage(this.hass?.states?.[ENTITY.LANGUAGE]?.state);
+  }
+
   render() {
+    const t = (key) => translate(this._lang, key);
     return html`
       <div style="padding:8px;">
         <p style="font-size:0.9em;color:var(--secondary-text-color);">
-          Sensor und Heizung werden direkt in der Karte über ⚙️ konfiguriert.
-          Die Werte hier sind nur Fallback-Defaults.
+          ${t("editor_note")}
         </p>
-        <label style="font-size:0.85em;">Sensor Entity</label>
+        <label style="font-size:0.85em;">${t("editor_sensor")}</label>
         <input
           style="width:100%;padding:8px;margin-bottom:8px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;"
           .value=${this._config?.sensor_entity || ""}
           @change=${(e) => this._fire("sensor_entity", e.target.value)}
           placeholder="sensor.brau_temperatur"
         />
-        <label style="font-size:0.85em;">Heater Entity</label>
+        <label style="font-size:0.85em;">${t("editor_heater")}</label>
         <input
           style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;"
           .value=${this._config?.heater_entity || ""}
@@ -2197,8 +2293,9 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "brausteuerung-card")) {
   window.customCards.push({
     type: "brausteuerung-card",
-    name: `Brausteuerung (v${VERSION})`,
-    description: "Braurezept-Eingabe und Steuerung für Hobbybrauer",
+    name: `Brew Control / Brausteuerung (v${VERSION})`,
+    description:
+      "Brew/mash control for homebrewers — Brausteuerung für Hobbybrauer (EN/DE)",
   });
 }
 
