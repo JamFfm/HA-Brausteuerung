@@ -87,7 +87,7 @@ nicht auflösen und die Karte bleibt leer.
 Gehe zu **Einstellungen → Dashboards → Ressourcen → Ressource hinzufügen** und
 trage ein:
 
-- **URL:** `/local/brausteuerung-card.js?v=2.3.0`
+- **URL:** `/local/brausteuerung-card.js?v=2.5.1`
 - **Typ:** `JavaScript-Modul` (`module`)
 
 > Das Verzeichnis `<config>/www/` ist in Home Assistant unter dem URL-Pfad
@@ -99,7 +99,7 @@ trage ein:
 > dass der Browser eine neue Card-Version nach einem Update zuverlässig lädt,
 > ohne dass der Cache manuell geleert werden muss (siehe Abschnitt
 > [Updates](#updates)). Die Version sollte mit der Konstante `VERSION` in
-> `brausteuerung-card.js` übereinstimmen (aktuell `2.3.0`).
+> `brausteuerung-card.js` übereinstimmen (aktuell `2.5.1`).
 
 ### 3. Helfer anlegen
 
@@ -122,6 +122,8 @@ Folgende Helfer werden angelegt:
 | `brau_hysterese` | `input_number` | Konfigurierbares Hystereseband unterhalb der Solltemperatur in °C (0,1–5). Kein `initial:` (bleibt erhalten); nach Erstinstallation einmalig auf **1,0** setzen. Fallback in Card/Automation: **1,0**. |
 | `brau_raststufe` | `timer` | Haltezeit-Timer der aktiven Raststufe. |
 | `brau_naechste_rast` | `input_button` | „Nächste Rast"-Taster; wird von der Card gedrückt, um manuell zur nächsten Rast zu wechseln. |
+| `brau_language` | `input_select` | Sprache der Oberfläche und der Benachrichtigungen: `en` / `de`. Über den Umschalter der Card wählbar; Default Englisch. Kein `initial:` (zuletzt gewählte Sprache bleibt erhalten). |
+| `brau_unit` | `input_select` | Temperatureinheit der Beschriftungen: `°C` / `°F`. **Reine Anzeige — keine Umrechnung der Werte.** Über die Einstellungsseite der Card wählbar; Default `°C`. Kein `initial:` (zuletzt gewählte Einheit bleibt erhalten). |
 
 Anschließend **Konfiguration prüfen und neu laden** bzw. Home Assistant neu
 starten: **Entwicklerwerkzeuge → YAML → Konfiguration prüfen**, danach die Helfer
@@ -190,7 +192,7 @@ Version der Card-Dateien die **Versionsnummer hochzählen** — an diesen Stelle
 die identisch gehalten werden müssen:
 
 1. In der Lovelace-Ressource die URL anpassen, z. B. von
-   `/local/brausteuerung-card.js?v=2.3.0` auf `?v=2.3.1`
+   `/local/brausteuerung-card.js?v=2.5.1` auf `?v=2.5.2`
    (**Einstellungen → Dashboards → Ressourcen**).
 2. In `www/brausteuerung-card.js` die Konstante `const VERSION = "…"` auf
    denselben Wert setzen. Diese Version wird auch intern an den Import des
@@ -219,6 +221,15 @@ funktioniert das Leeren des Bilder-/Datei-Caches analog; alternativ hilft oft ei
 ---
 
 ## Bedienung
+
+### Sprache umschalten (EN/DE)
+
+In der Kopfzeile der Karte befindet sich ein **Sprachumschalter** (`EN`/`DE`).
+Damit lässt sich die Oberfläche jederzeit zwischen **Englisch** (Standard) und
+**Deutsch** wechseln. Die Wahl wird im Helfer `input_select.brau_language`
+gespeichert und gilt auch für die **Benachrichtigungstexte der Automationen**
+(z. B. Übertemperatur, Kommunikationsverlust, Brauende). Fehlt der Helferwert
+oder ist er ungültig, wird Englisch verwendet.
 
 ### Rezept / Raststufen anlegen
 
