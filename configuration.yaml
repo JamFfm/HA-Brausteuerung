@@ -62,6 +62,17 @@ input_select:
       - done
     initial: idle
 
+  # Sprache der Card-Oberfläche und der Steuerungs-Benachrichtigungen (Req 14).
+  # Default Englisch; jederzeit über den Umschalter der Card wechselbar. Kein
+  # `initial:`, damit die zuletzt gewählte Sprache Neustarts/Updates überdauert
+  # (restore_state). Beim allerersten Anlegen ist der Startwert die erste Option
+  # (en), also Englisch.
+  brau_language:
+    name: Brau Language
+    options:
+      - en
+      - de
+
 # -----------------------------------------------------------------------------
 # input_number — aktive Stufe, Solltemperatur, Sicherheits-Offset, Hysterese
 # -----------------------------------------------------------------------------
