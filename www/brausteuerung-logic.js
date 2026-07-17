@@ -925,15 +925,19 @@ export function parseSamples(raw) {
  * @param {string} sensorEntity   Entity-ID des Temperatursensors (Ist).
  * @param {string} setpointEntity Entity-ID der Solltemperatur (z. B. input_number).
  * @param {number|string} hours   Anzeigedauer in Stunden (fraktional erlaubt, max. 4).
+ * @param {{actual?: string, setpoint?: string}} [names] Anzeigenamen der Linien
+ *   (sprachabhängig, Req 14). Fehlt ein Name, wird der englische Default genutzt.
  * @returns {Object} Gültige `history-graph`-Kartenkonfiguration.
  */
-export function buildHistoryGraphConfig(sensorEntity, setpointEntity, hours) {
+export function buildHistoryGraphConfig(sensorEntity, setpointEntity, hours, names = {}) {
+  const actualName = names && names.actual ? names.actual : 'Actual temperature';
+  const setpointName = names && names.setpoint ? names.setpoint : 'Target temperature';
   const entities = [];
   if (typeof sensorEntity === 'string' && sensorEntity.trim() !== '') {
-    entities.push({ entity: sensorEntity, name: 'Ist-Temperatur' });
+    entities.push({ entity: sensorEntity, name: actualName });
   }
   if (typeof setpointEntity === 'string' && setpointEntity.trim() !== '') {
-    entities.push({ entity: setpointEntity, name: 'Solltemperatur', color: 'red' });
+    entities.push({ entity: setpointEntity, name: setpointName, color: 'red' });
   }
   const num = typeof hours === 'string' ? Number(hours) : hours;
   const hoursToShow =
@@ -1098,4 +1102,233 @@ export function buildGraphModel(samples, options = {}) {
     plot: { x0, x1, y0, y1 },
     ...meta,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Internationalisierung (i18n) — EN/DE (Req 14)
+// ---------------------------------------------------------------------------
+//
+// Reine, HA-/DOM-freie Übersetzungshilfen. Die Card wählt die Sprache über den
+// Helfer `input_select.brau_language` (Single Source of Truth), sodass auch die
+// Automationen (Benachrichtigungen) dieselbe Sprache verwenden können.
+
+/** Standardsprache (Req 14: Default Englisch). @type {string} */
+export const DEFAULT_LANGUAGE = 'en';
+
+/** Unterstützte Sprachen. @type {string[]} */
+export const SUPPORTED_LANGUAGES = ['en', 'de'];
+
+/**
+ * Normalisiert einen (möglicherweise ungültigen) Sprachwert auf eine
+ * unterstützte Sprache; fällt auf {@link DEFAULT_LANGUAGE} zurück.
+ * @param {string|null|undefined} raw Rohwert (z. B. Helferzustand).
+ * @returns {string} 'en' oder 'de'.
+ */
+export function resolveLanguage(raw) {
+  return SUPPORTED_LANGUAGES.includes(raw) ? raw : DEFAULT_LANGUAGE;
+}
+
+/** Unterstützte Temperatureinheiten (nur Anzeige, keine Umrechnung) — Req 15. @type {string[]} */
+export const SUPPORTED_UNITS = ['°C', '°F'];
+
+/** Standard-Temperatureinheit. @type {string} */
+export const DEFAULT_UNIT = '°C';
+
+/**
+ * Normalisiert einen (möglicherweise ungültigen) Einheitenwert auf `°C`/`°F`;
+ * fällt auf {@link DEFAULT_UNIT} zurück (Req 15). Es findet KEINE Umrechnung
+ * statt — die Einheit ist reine Beschriftung.
+ * @param {string|null|undefined} raw Rohwert (z. B. Helferzustand).
+ * @returns {string} '°C' oder '°F'.
+ */
+export function resolveUnit(raw) {
+  return SUPPORTED_UNITS.includes(raw) ? raw : DEFAULT_UNIT;
+}
+
+/**
+ * Übersetzungstabelle. Jeder Schlüssel existiert in beiden Sprachen.
+ * Platzhalter im Format `{name}` werden über `vars` ersetzt.
+ * @type {{en: Object<string,string>, de: Object<string,string>}}
+ */
+export const TRANSLATIONS = Object.freeze({
+  en: {
+    app_title: '🍺 Brew Control',
+    manage_recipes_tt: 'Manage recipes',
+    settings_tt: 'Settings',
+    language_tt: 'Language',
+    // Status
+    no_sensor: '⚠️ No sensor set',
+    invalid_sensor: '⚠️ No valid sensor value',
+    safety_shutoff: '🛡 Safety shutoff at {v} {unit}',
+    safety_shutoff_none: '🛡 Safety shutoff at —',
+    hysteresis_status: '🌡 Hysteresis: {v} {unit}',
+    status_idle: 'idle',
+    status_running: 'running',
+    status_paused: 'paused',
+    status_done: 'done',
+    // Heater
+    heater_turn_off_tt: 'Turn heater off',
+    heater_turn_on_tt: 'Turn heater on',
+    heater_on: 'ON',
+    heater_off: 'OFF',
+    // Countdown
+    remaining_hold: '⏱ Remaining hold time: {v}',
+    // Graph
+    graph_title: '📈 Temperature history',
+    graph_actual: 'Actual temperature',
+    graph_setpoint: 'Target temperature',
+    duration: 'Duration:',
+    select_sensor_first: 'Please select a temperature sensor via ⚙️ first.',
+    loading_graph: 'Loading temperature history…',
+    // Controls
+    next_rest: '⏭ Next rest',
+    stop: '⏹ Stop',
+    start: '▶ Start',
+    start_disabled_tt: 'Start requires at least one rest and a valid sensor value.',
+    start_tt: 'Start brewing process',
+    // Recipe
+    no_rests: 'No rests yet. Add a rest below.',
+    clear_all: '🗑 Clear all',
+    move_up_tt: 'Move up',
+    move_down_tt: 'Move down',
+    edit_tt: 'Edit',
+    delete_tt: 'Delete',
+    name_optional: 'Name (optional)',
+    save: '✓ Save',
+    cancel: '✕ Cancel',
+    add_rest: '＋ Rest',
+    close: '✕ Close',
+    step_detail: '{temp} {unit} · {dur} min',
+    // Library
+    manage_recipes_title: '📋 Manage recipes',
+    no_saved_recipes: 'No saved recipes yet.',
+    rests_count: '{n} rests',
+    load_recipe_tt: 'Load as active recipe',
+    load: '📥 Load',
+    delete_from_library_tt: 'Delete from library',
+    save_current_as: 'Save current recipe as…',
+    recipe_name_placeholder: 'e.g. Pale Ale',
+    save_as: '💾 Save as…',
+    overwrite_confirm: 'Recipe "{name}" already exists. Overwrite?',
+    // Settings
+    sensor_label: 'Temperature sensor',
+    heater_label: 'Heater switch',
+    hysteresis_label: 'Hysteresis ({unit}, > 0 to 5)',
+    unit_label: 'Temperature unit',
+    // Errors
+    err_lib_load: 'Recipe library could not be loaded.',
+    err_lib_save: 'Recipe library could not be saved.',
+    err_enter_name: 'Please enter a name for the recipe.',
+    err_recipe_not_found: 'Recipe not found.',
+    err_recipe_too_large_load: 'Recipe too large for the active storage (max. 255 characters). Please shorten.',
+    err_recipe_too_large: 'Recipe too large (max. 255 characters). Use shorter names or fewer rests.',
+    err_invalid_step_add: 'Invalid input: target temperature must be 0–100 °C, hold time a whole number > 0 minutes.',
+    err_invalid_step_edit: 'Invalid input: change discarded. Target temperature 0–100 °C, hold time a whole number > 0.',
+    err_no_heater: 'No heater switch set.',
+    err_heater_toggle: 'Switching the heater failed.',
+    err_invalid_hysteresis: 'Invalid hysteresis: please enter a value greater than 0 °C up to 5 °C.',
+    err_entity_save_retry: 'Saving the entity selection failed. Selection kept, retrying…',
+    // Editor
+    editor_note: 'Sensor and heater are configured directly in the card via ⚙️. The values here are only fallback defaults.',
+    editor_sensor: 'Sensor entity',
+    editor_heater: 'Heater entity',
+  },
+  de: {
+    app_title: '🍺 Brausteuerung',
+    manage_recipes_tt: 'Rezepte verwalten',
+    settings_tt: 'Einstellungen',
+    language_tt: 'Sprache',
+    no_sensor: '⚠️ Kein Sensor gesetzt',
+    invalid_sensor: '⚠️ Kein gültiger Sensorwert',
+    safety_shutoff: '🛡 Sicherheitsabschaltung bei {v} {unit}',
+    safety_shutoff_none: '🛡 Sicherheitsabschaltung bei —',
+    hysteresis_status: '🌡 Hysterese: {v} {unit}',
+    status_idle: 'bereit',
+    status_running: 'läuft',
+    status_paused: 'pausiert',
+    status_done: 'fertig',
+    heater_turn_off_tt: 'Heizung ausschalten',
+    heater_turn_on_tt: 'Heizung einschalten',
+    heater_on: 'AN',
+    heater_off: 'AUS',
+    remaining_hold: '⏱ Verbleibende Haltezeit: {v}',
+    graph_title: '📈 Temperaturverlauf',
+    graph_actual: 'Ist-Temperatur',
+    graph_setpoint: 'Solltemperatur',
+    duration: 'Dauer:',
+    select_sensor_first: 'Bitte zuerst über ⚙️ einen Temperatursensor auswählen.',
+    loading_graph: 'Lade Temperaturverlauf…',
+    next_rest: '⏭ Nächste Rast',
+    stop: '⏹ Stopp',
+    start: '▶ Start',
+    start_disabled_tt: 'Start benötigt mindestens eine Rast und einen gültigen Sensorwert.',
+    start_tt: 'Brauprozess starten',
+    no_rests: 'Noch keine Raststufen. Unten eine Rast hinzufügen.',
+    clear_all: '🗑 Alle löschen',
+    move_up_tt: 'Nach oben',
+    move_down_tt: 'Nach unten',
+    edit_tt: 'Bearbeiten',
+    delete_tt: 'Löschen',
+    name_optional: 'Name (optional)',
+    save: '✓ Speichern',
+    cancel: '✕ Abbrechen',
+    add_rest: '＋ Rast',
+    close: '✕ Schließen',
+    step_detail: '{temp} {unit} · {dur} min',
+    manage_recipes_title: '📋 Rezepte verwalten',
+    no_saved_recipes: 'Noch keine gespeicherten Rezepte.',
+    rests_count: '{n} Rasten',
+    load_recipe_tt: 'Als aktives Rezept laden',
+    load: '📥 Laden',
+    delete_from_library_tt: 'Aus Bibliothek löschen',
+    save_current_as: 'Aktuelles Rezept speichern unter…',
+    recipe_name_placeholder: 'z. B. Helles',
+    save_as: '💾 Speichern unter…',
+    overwrite_confirm: 'Rezept "{name}" existiert bereits. Überschreiben?',
+    sensor_label: 'Temperatursensor',
+    heater_label: 'Heizungs-Aktor',
+    hysteresis_label: 'Hysterese ({unit}, > 0 bis 5)',
+    unit_label: 'Temperatureinheit',
+    err_lib_load: 'Rezept-Bibliothek konnte nicht geladen werden.',
+    err_lib_save: 'Rezept-Bibliothek konnte nicht gespeichert werden.',
+    err_enter_name: 'Bitte einen Namen für das Rezept eingeben.',
+    err_recipe_not_found: 'Rezept nicht gefunden.',
+    err_recipe_too_large_load: 'Rezept zu groß für den aktiven Speicher (max. 255 Zeichen). Bitte kürzen.',
+    err_recipe_too_large: 'Rezept zu groß (max. 255 Zeichen). Bitte kürzere Namen oder weniger Rasten verwenden.',
+    err_invalid_step_add: 'Ungültige Eingabe: Solltemperatur muss 0–100 °C sein, Haltezeit eine ganze Zahl > 0 Minuten.',
+    err_invalid_step_edit: 'Ungültige Eingabe: Änderung verworfen. Solltemperatur 0–100 °C, Haltezeit ganze Zahl > 0.',
+    err_no_heater: 'Kein Heizungs-Aktor gesetzt.',
+    err_heater_toggle: 'Schalten des Heizungs-Aktors fehlgeschlagen.',
+    err_invalid_hysteresis: 'Ungültige Hysterese: bitte einen Wert größer als 0 °C bis maximal 5 °C eingeben.',
+    err_entity_save_retry: 'Speichern der Entitätsauswahl fehlgeschlagen. Auswahl bleibt erhalten, neuer Versuch läuft…',
+    editor_note: 'Sensor und Heizung werden direkt in der Karte über ⚙️ konfiguriert. Die Werte hier sind nur Fallback-Defaults.',
+    editor_sensor: 'Sensor-Entität',
+    editor_heater: 'Heizungs-Entität',
+  },
+});
+
+/**
+ * Übersetzt einen Schlüssel in die gewählte Sprache (Req 14). Unbekannte
+ * Sprachen fallen auf {@link DEFAULT_LANGUAGE}, unbekannte Schlüssel auf die
+ * englische Fassung bzw. den Schlüssel selbst zurück. Platzhalter `{name}`
+ * werden aus `vars` ersetzt.
+ *
+ * @param {string} lang Sprachcode ('en'/'de').
+ * @param {string} key  Übersetzungsschlüssel.
+ * @param {Object<string, (string|number)>} [vars] Platzhalterwerte.
+ * @returns {string} Übersetzter Text.
+ */
+export function translate(lang, key, vars) {
+  const l = resolveLanguage(lang);
+  const table = TRANSLATIONS[l] || TRANSLATIONS[DEFAULT_LANGUAGE];
+  let str =
+    table[key] !== undefined
+      ? table[key]
+      : TRANSLATIONS[DEFAULT_LANGUAGE][key] !== undefined
+        ? TRANSLATIONS[DEFAULT_LANGUAGE][key]
+        : key;
+  if (vars) {
+    str = str.replace(/\{(\w+)\}/g, (m, k) => (vars[k] !== undefined ? String(vars[k]) : m));
+  }
+  return str;
 }
