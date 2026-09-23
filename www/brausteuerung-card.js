@@ -39,6 +39,9 @@ import {
   upsertRecipe,
   removeRecipe,
   findRecipe,
+  displayRecipeName,
+  isRecipeUnchanged,
+  nextModifiedRecipeName,
   parseLibrary,
   serializeLibrary,
   canStart,
@@ -50,7 +53,7 @@ import {
   resolveUnit,
   DEFAULT_GRAPH_HOURS,
   Status,
-} from "./brausteuerung-logic.js?v=2.5.1";
+} from "./brausteuerung-logic.js?v=2.6.3";
 
 // ---------------------------------------------------------------------------
 // Versionierung / Cache-Busting (Req 11.5, 11.6)
@@ -64,7 +67,7 @@ import {
 // Der statische Import-Spezifizierer muss ein String-Literal sein; daher ist
 // die Versionsnummer dort fest eingetragen und MUSS bei einem Update gemeinsam
 // mit VERSION hochgezählt werden.
-const VERSION = "2.5.1";
+const VERSION = "2.6.3";
 
 // LitElement-Basisklasse aus Home Assistant beziehen (kein externes CDN).
 const LitElement = Object.getPrototypeOf(customElements.get("ha-panel-lovelace"));
@@ -76,6 +79,8 @@ const css = LitElement.prototype.css;
 // ---------------------------------------------------------------------------
 const ENTITY = Object.freeze({
   RECIPE_JSON: "input_text.brau_rezept_json",
+  // Name des aktiven Rezepts (Req 16) — Anzeige in der Kopfzeile der Card.
+  RECIPE_NAME: "input_text.brau_rezept_name",
   SENSOR_ENTITY: "input_text.brau_sensor_entity",
   HEATER_ENTITY: "input_text.brau_heater_entity",
   STATUS: "input_select.brau_status",
@@ -100,6 +105,11 @@ const LIBRARY_KEY = "brausteuerung_recipes";
 // Key der Graph-Einstellungen (gewählte Anzeigedauer) im HA-Benutzerspeicher (Req 13).
 const GRAPH_SETTINGS_KEY = "brausteuerung_graph_settings";
 
+// Key des aktiven Rezeptnamens im HA-Benutzerspeicher (Req 16). Wird genutzt,
+// solange der optionale Helfer `input_text.brau_rezept_name` nicht existiert —
+// so funktioniert die Namensanzeige auch ohne Anpassung der configuration.yaml.
+const ACTIVE_NAME_KEY = "brausteuerung_active_recipe";
+
 // Wartezeit zwischen Wiederholversuchen des Persistenzschutzes (Req 5.3).
 const PERSIST_RETRY_DELAY_MS = 2000;
 
@@ -120,6 +130,10 @@ class BrausteuerungCard extends LitElement {
       _showLibrary: { type: Boolean },
       // Temperaturverlauf-Graph (Req 13): gewählte Anzeigedauer in Stunden.
       _graphHours: { type: Number },
+      // Name des aktiven Rezepts (Req 16) — lokal gehalten, damit die Anzeige
+      // auch ohne den (optionalen) Helfer `input_text.brau_rezept_name` sofort
+      // korrekt ist.
+      _recipeName: { type: String },
     };
   }
 
@@ -134,6 +148,11 @@ class BrausteuerungCard extends LitElement {
     this._errorMessage = "";
     this._library = [];
     this._showLibrary = false;
+    // Name des aktiven Rezepts (Req 16). Quelle ist bevorzugt der Helfer
+    // `input_text.brau_rezept_name`; fehlt dieser, wird der Name im
+    // HA-Benutzerspeicher gehalten (wie die Rezept-Bibliothek).
+    this._recipeName = "";
+    this._recipeNameLoaded = false;
     // Temperaturverlauf-Graph (Req 13): Die Card bettet die native
     // Home-Assistant-`history-graph`-Karte ein (echte Recorder-Historie).
     // `_graphHours` steuert `hours_to_show`; `_graphCard` ist das eingebettete
@@ -180,6 +199,8 @@ class BrausteuerungCard extends LitElement {
     this._loadLibrary();
     // Gewählte Anzeigedauer (hours_to_show) aus dem HA-Benutzerspeicher laden (Req 13.3).
     this._loadGraphSettings();
+    // Aktiven Rezeptnamen laden (Req 16.1).
+    this._loadActiveRecipeName();
   }
 
   /** Räumt den Intervall-Tick beim Aushängen der Card auf (Req 4.7). */
@@ -256,6 +277,15 @@ class BrausteuerungCard extends LitElement {
    * @param {Map} changed Geänderte Properties (LitElement).
    */
   updated(changed) {
+    // Beim ersten verfügbaren `hass` die asynchronen Benutzerdaten nachladen:
+    // In `connectedCallback` ist die WebSocket-Verbindung oft noch nicht da
+    // (Req 12.8, 13.3, 16.1). Bibliothek UND Name werden benötigt, damit die
+    // „Neu"-Markierung die erste Änderung erkennen kann.
+    if (changed.has("hass") && this.hass && this.hass.connection) {
+      this._loadActiveRecipeName();
+      this._loadLibrary();
+      this._loadGraphSettings();
+    }
     if (!this._graphCard) return;
     if (changed.has("hass") && this.hass) {
       this._graphCard.hass = this.hass;
@@ -501,6 +531,10 @@ class BrausteuerungCard extends LitElement {
     }
     const newLib = upsertRecipe(this._library, trimmed, this._recipe);
     const ok = await this._persistLibrary(newLib);
+    if (ok) {
+      // Das aktive Rezept trägt ab jetzt den gespeicherten Namen (Req 16.1).
+      this._persistRecipeName(trimmed);
+    }
     return { ok };
   }
 
@@ -528,7 +562,13 @@ class BrausteuerungCard extends LitElement {
       this._setError(this._t("err_recipe_too_large_load"));
       return false;
     }
-    return this._persistRecipe(steps);
+    // Laden ist keine Änderung: Der Name des geladenen Rezepts wird
+    // unverändert übernommen (Req 16.1).
+    if (!this._persistRecipe(steps)) {
+      return false;
+    }
+    this._persistRecipeName(recipe.name);
+    return true;
   }
 
   /**
@@ -564,6 +604,35 @@ class BrausteuerungCard extends LitElement {
     return parseRecipe(
       this.hass?.states[ENTITY.RECIPE_JSON]?.state ?? "[]"
     );
+  }
+
+  /**
+   * Gespeicherter Name des aktiven Rezepts (Req 16.1). Leerer String, wenn kein
+   * Name gesetzt ist bzw. der Helfer fehlt oder keinen gültigen Wert hat.
+   * @returns {string} Rezeptname (getrimmt) oder "".
+   */
+  get _activeRecipeName() {
+    const raw = this.hass?.states[ENTITY.RECIPE_NAME]?.state;
+    if (
+      typeof raw === "string" &&
+      raw !== "unknown" &&
+      raw !== "unavailable" &&
+      raw.trim() !== ""
+    ) {
+      return raw.trim();
+    }
+    // Kein (gültiger) Helferwert: lokal gehaltener/aus dem Benutzerspeicher
+    // geladener Name (Req 16.1).
+    return typeof this._recipeName === "string" ? this._recipeName.trim() : "";
+  }
+
+  /**
+   * Anzuzeigender Rezeptname (Req 16.1, 16.2): der gespeicherte Name oder der
+   * Platzhalter „Neues Rezept", wenn (noch) kein Rezept ausgewählt ist.
+   * @returns {string} Anzeigename.
+   */
+  get _displayRecipeName() {
+    return displayRecipeName(this._activeRecipeName, this._t("new_recipe"));
   }
 
   /** @returns {string} Aktueller Betriebsstatus (idle/running/paused/done). */
@@ -763,7 +832,10 @@ class BrausteuerungCard extends LitElement {
         changedProps.has("_library") ||
         changedProps.has("_localRecipe") ||
         changedProps.has("_showSettings") ||
-        changedProps.has("_editIndex")
+        changedProps.has("_editIndex") ||
+        // Geladenes/gespeichertes Rezept soll den Namen in der Kopfzeile sofort
+        // aktualisieren, auch wenn das Bibliotheks-Panel offen bleibt (Req 16.1).
+        changedProps.has("_recipeName")
       );
     }
     // Eine frisch geladene/aktualisierte Bibliothek soll auch sonst sichtbar werden.
@@ -784,7 +856,8 @@ class BrausteuerungCard extends LitElement {
       return (
         changedProps.has("_showSettings") ||
         changedProps.has("_editIndex") ||
-        changedProps.has("_localRecipe")
+        changedProps.has("_localRecipe") ||
+        changedProps.has("_recipeName")
       );
     }
     return true;
@@ -811,6 +884,117 @@ class BrausteuerungCard extends LitElement {
       entity_id: ENTITY.RECIPE_JSON,
       value: serializeRecipe(recipe),
     });
+    return true;
+  }
+
+  // =========================================================================
+  // Name des aktiven Rezepts (Req 16)
+  // =========================================================================
+
+  /**
+   * Schreibt den Namen des aktiven Rezepts in den Helfer
+   * `input_text.brau_rezept_name` (Req 16.1). Fehlt der Helfer (ältere
+   * Installation, Helfer noch nicht angelegt), wird nichts geschrieben — die
+   * Card zeigt dann weiterhin den Platzhalter an.
+   *
+   * @param {string} name Zu speichernder Name ("" löscht den Namen).
+   */
+  _persistRecipeName(name) {
+    const clean = typeof name === "string" ? name.trim() : "";
+    // Sofort lokal übernehmen, damit die Kopfzeile den Namen unabhängig vom
+    // Persistenzergebnis anzeigt (Req 16.1).
+    this._recipeName = clean;
+    // Bevorzugt in den Helfer schreiben, falls er angelegt wurde.
+    if (this.hass?.states[ENTITY.RECIPE_NAME]) {
+      this.hass.callService("input_text", "set_value", {
+        entity_id: ENTITY.RECIPE_NAME,
+        // input_text lehnt Leerstrings je nach `min:` ggf. ab — Leerzeichen
+        // reicht als „kein Name", da die Anzeige den Wert trimmt.
+        value: clean === "" ? " " : clean,
+      });
+    }
+    // Zusätzlich im Benutzerspeicher ablegen: So überlebt der Name ein
+    // Neuladen auch dann, wenn der Helfer (noch) nicht existiert.
+    this._persistActiveRecipeName(clean);
+  }
+
+  /**
+   * Lädt den aktiven Rezeptnamen aus dem HA-Benutzerspeicher (Req 16.1).
+   *
+   * Dient als Fallback/Ergänzung zum Helfer `input_text.brau_rezept_name`.
+   * Idempotent; ein bereits vorhandener Helferwert hat in der Anzeige Vorrang.
+   * @returns {Promise<void>}
+   */
+  async _loadActiveRecipeName() {
+    if (this._recipeNameLoaded) return;
+    const conn = this.hass?.connection;
+    if (!conn || typeof conn.sendMessagePromise !== "function") {
+      return;
+    }
+    try {
+      const result = await conn.sendMessagePromise({
+        type: "frontend/get_user_data",
+        key: ACTIVE_NAME_KEY,
+      });
+      const value = result?.value;
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
+      if (parsed && typeof parsed.name === "string") {
+        this._recipeName = parsed.name.trim();
+      }
+      this._recipeNameLoaded = true;
+    } catch (err) {
+      // Benutzerspeicher nicht verfügbar: Platzhalter bleibt stehen.
+    }
+  }
+
+  /**
+   * Persistiert den aktiven Rezeptnamen im HA-Benutzerspeicher (Req 16.1).
+   * @param {string} name Zu speichernder Name.
+   * @returns {Promise<void>}
+   */
+  async _persistActiveRecipeName(name) {
+    const conn = this.hass?.connection;
+    if (!conn || typeof conn.sendMessagePromise !== "function") {
+      return;
+    }
+    try {
+      await conn.sendMessagePromise({
+        type: "frontend/set_user_data",
+        key: ACTIVE_NAME_KEY,
+        value: JSON.stringify({ name }),
+      });
+      this._recipeNameLoaded = true;
+    } catch (err) {
+      // Persistenz fehlgeschlagen: Name bleibt zumindest lokal sichtbar.
+    }
+  }
+
+  /**
+   * Persistiert eine Rezeptänderung (Rast hinzugefügt, bearbeitet, gelöscht
+   * oder umsortiert) und markiert das Rezept bei der ERSTEN Änderung als
+   * abgewandelt (Req 16.3 – 16.5).
+   *
+   * Nur solange das aktive Rezept noch identisch zum gleichnamigen Eintrag der
+   * Bibliothek ist, wird der Name um das Suffix „Neu" (bzw. „Neu 2", „Neu 3",
+   * … bei Namenskollision) ergänzt. Jede weitere Änderung lässt den Namen
+   * unverändert. Ohne gesetzten Namen (neues Rezept) bleibt der Platzhalter
+   * „Neues Rezept" stehen.
+   *
+   * @param {Array} newRecipe Das geänderte Rezept.
+   * @returns {boolean} `true`, wenn die Änderung persistiert wurde.
+   */
+  _applyRecipeChange(newRecipe) {
+    const name = this._activeRecipeName;
+    const firstChange =
+      name !== "" && isRecipeUnchanged(this._library, name, this._recipe);
+    if (!this._persistRecipe(newRecipe)) {
+      return false;
+    }
+    if (firstChange) {
+      this._persistRecipeName(
+        nextModifiedRecipeName(this._library, name, this._t("modified_suffix"))
+      );
+    }
     return true;
   }
 
@@ -889,7 +1073,7 @@ class BrausteuerungCard extends LitElement {
     const resolvedName = resolveStepName(name, this._recipe.length + 1);
     const step = { name: resolvedName, temperature, duration };
     const newRecipe = [...this._recipe, step];
-    if (this._persistRecipe(newRecipe)) {
+    if (this._applyRecipeChange(newRecipe)) {
       this._clearNewInputs();
     }
   }
@@ -942,7 +1126,7 @@ class BrausteuerungCard extends LitElement {
     const newRecipe = this._recipe.map((existing, idx) =>
       idx === i ? editedStep : existing
     );
-    if (this._persistRecipe(newRecipe)) {
+    if (this._applyRecipeChange(newRecipe)) {
       this._editIndex = -1;
     }
   }
@@ -957,7 +1141,7 @@ class BrausteuerungCard extends LitElement {
       return;
     }
     const newRecipe = this._recipe.filter((_, idx) => idx !== i);
-    this._persistRecipe(newRecipe);
+    this._applyRecipeChange(newRecipe);
   }
 
   /** Entfernt alle Rasten aus dem Rezept (Req 3.6). */
@@ -965,7 +1149,7 @@ class BrausteuerungCard extends LitElement {
     if (this._status === Status.RUNNING) {
       return;
     }
-    this._persistRecipe([]);
+    this._applyRecipeChange([]);
   }
 
   /**
@@ -988,7 +1172,7 @@ class BrausteuerungCard extends LitElement {
     if (newRecipe === current) {
       return;
     }
-    this._persistRecipe(newRecipe);
+    this._applyRecipeChange(newRecipe);
   }
 
   /** Schaltet die Sichtbarkeit des Settings-Panels um (Req 5.1, 6.1). */
@@ -1197,17 +1381,31 @@ class BrausteuerungCard extends LitElement {
       ha-card {
         padding: 16px;
       }
+      /* Kopfzeile: Titel links, Rezeptname mittig, Aktionen rechts (Req 16.1).
+         Die 1fr-Spalten links/rechts halten den Namen optisch in der Mitte. */
       .header {
-        display: flex;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         align-items: center;
-        justify-content: space-between;
+        gap: 8px;
       }
       .header h2 {
         margin: 0;
+        min-width: 0;
+      }
+      .recipe-name {
+        font-weight: 700;
+        text-align: center;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--primary-text-color, #000);
       }
       .header-actions {
         display: flex;
         align-items: center;
+        justify-content: flex-end;
         gap: 4px;
       }
       .lang-select {
@@ -1605,6 +1803,13 @@ class BrausteuerungCard extends LitElement {
       <ha-card>
         <div class="header">
           <h2>${this._t("app_title")}</h2>
+          <!-- Name des aktiven Rezepts: oben mittig, fett (Req 16.1, 16.2) -->
+          <div
+            class="recipe-name"
+            title=${`${this._t("active_recipe_tt")}: ${this._displayRecipeName}`}
+          >
+            ${this._displayRecipeName}
+          </div>
           <div class="header-actions">
             <select
               class="lang-select"

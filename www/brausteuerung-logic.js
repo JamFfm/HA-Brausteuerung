@@ -636,6 +636,91 @@ export function removeRecipe(library, name) {
   return library.filter((r) => !(r && normalizeRecipeName(r.name) === key));
 }
 
+// ---------------------------------------------------------------------------
+// Name des aktiven Rezepts (Req 16) — Anzeige und „Neu"-Markierung
+// ---------------------------------------------------------------------------
+//
+// Das aktive Rezept trägt einen Namen (Helfer `input_text.brau_rezept_name`),
+// der in der Kopfzeile der Card fett und zentriert angezeigt wird. Ist kein
+// Name gesetzt, erscheint ein Platzhalter („Neues Rezept").
+//
+// Wird ein benanntes Rezept verändert (Rast hinzugefügt, gelöscht, bearbeitet
+// oder umsortiert), erhält der Name beim ERSTEN Eingriff das Suffix „Neu".
+// Danach bleibt der Name stabil — weitere Änderungen benennen nicht erneut um.
+// Erkannt wird „unverändert" ausschließlich über den Abgleich mit der
+// Bibliothek: Nur solange das aktive Rezept namentlich UND inhaltlich mit dem
+// gespeicherten Bibliothekseintrag übereinstimmt, gilt es als unverändert.
+// Dadurch ist kein zusätzliches Zustandsflag nötig (überlebt Reloads).
+
+/** Default-Suffix für abgewandelte Rezepte (wird i. d. R. übersetzt übergeben). */
+export const MODIFIED_NAME_SUFFIX = 'Neu';
+
+/**
+ * Liefert den anzuzeigenden Namen des aktiven Rezepts (Req 16.1, 16.2).
+ *
+ * @param {string} name         Gespeicherter Name des aktiven Rezepts.
+ * @param {string} placeholder  Platzhalter, wenn kein Name gesetzt ist.
+ * @returns {string} Anzuzeigender Name.
+ */
+export function displayRecipeName(name, placeholder = 'Neues Rezept') {
+  const trimmed = normalizeRecipeName(name);
+  return trimmed !== '' ? trimmed : placeholder;
+}
+
+/**
+ * Prüft, ob das aktive Rezept unverändert dem gleichnamigen Bibliotheks-
+ * Rezept entspricht (Req 16.4).
+ *
+ * Grundlage ist die kompakte Serialisierung (Name, Solltemperatur, Haltezeit
+ * und Reihenfolge). Fehlt der Name in der Bibliothek, gilt das Rezept als
+ * verändert (bzw. bereits umbenannt) — es wird dann nicht erneut umbenannt.
+ *
+ * @param {Array} library Rezept-Bibliothek.
+ * @param {string} name   Name des aktiven Rezepts.
+ * @param {Array} steps   Raststufen des aktiven Rezepts.
+ * @returns {boolean} `true`, wenn Name gefunden UND Inhalt identisch ist.
+ */
+export function isRecipeUnchanged(library, name, steps) {
+  const entry = findRecipe(library, name);
+  if (!entry) return false;
+  return serializeRecipe(entry.steps) === serializeRecipe(steps);
+}
+
+/**
+ * Bildet den Namen für ein abgewandeltes Rezept (Req 16.3, 16.5).
+ *
+ * An den Namen wird das Suffix angehängt (z. B. `Helles` → `Helles Neu`).
+ * Existiert dieser Name bereits in der Bibliothek — oder trägt der Name das
+ * Suffix schon —, wird eine Zahl hochgezählt (`Helles Neu 2`, `Helles Neu 3`,
+ * …). Ein leerer Name bleibt leer (dann greift der Platzhalter).
+ *
+ * @param {Array} library Rezept-Bibliothek (zur Kollisionsprüfung).
+ * @param {string} name   Bisheriger Name des aktiven Rezepts.
+ * @param {string} [suffix] Zu verwendendes Suffix (Default `Neu`).
+ * @returns {string} Neuer, in der Bibliothek noch nicht belegter Name.
+ */
+export function nextModifiedRecipeName(library, name, suffix = MODIFIED_NAME_SUFFIX) {
+  const base = normalizeRecipeName(name);
+  if (base === '') return '';
+  const sfx =
+    typeof suffix === 'string' && suffix.trim() !== ''
+      ? suffix.trim()
+      : MODIFIED_NAME_SUFFIX;
+  // Bereits vorhandenes Suffix (inkl. optionaler Zählnummer) abtrennen, damit
+  // kein „Helles Neu Neu" entsteht.
+  const escaped = sfx.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tail = new RegExp(`\\s+${escaped}(?:\\s+\\d+)?$`, 'i');
+  const root = base.replace(tail, '').trim() || base;
+  let candidate = `${root} ${sfx}`;
+  let n = 1;
+  // Solange hochzählen, wie der Name belegt ist bzw. dem bisherigen entspricht.
+  while (findRecipe(library, candidate) || normalizeRecipeName(candidate) === base) {
+    n += 1;
+    candidate = `${root} ${sfx} ${n}`;
+  }
+  return candidate;
+}
+
 /**
  * Parst den Rohwert der Bibliothek aus dem HA-Benutzerspeicher robust (Req 12.8).
  *
@@ -1159,7 +1244,7 @@ export const TRANSLATIONS = Object.freeze({
     // Status
     no_sensor: '⚠️ No sensor set',
     invalid_sensor: '⚠️ No valid sensor value',
-    safety_shutoff: '🛡 Safety shutoff at {v} {unit}',
+    safety_shutoff: '🛡 Safety shutoff at 𝚫t {v} {unit}',
     safety_shutoff_none: '🛡 Safety shutoff at —',
     hysteresis_status: '🌡 Hysteresis: {v} {unit}',
     status_idle: 'idle',
@@ -1208,8 +1293,12 @@ export const TRANSLATIONS = Object.freeze({
     delete_from_library_tt: 'Delete from library',
     save_current_as: 'Save current recipe as…',
     recipe_name_placeholder: 'e.g. Pale Ale',
-    save_as: '💾 Save as…',
+    save_as: '💾 Save',
     overwrite_confirm: 'Recipe "{name}" already exists. Overwrite?',
+    // Active recipe name (Req 16)
+    new_recipe: 'New recipe',
+    modified_suffix: 'New',
+    active_recipe_tt: 'Active recipe',
     // Settings
     sensor_label: 'Temperature sensor',
     heater_label: 'Heater switch',
@@ -1240,7 +1329,7 @@ export const TRANSLATIONS = Object.freeze({
     language_tt: 'Sprache',
     no_sensor: '⚠️ Kein Sensor gesetzt',
     invalid_sensor: '⚠️ Kein gültiger Sensorwert',
-    safety_shutoff: '🛡 Sicherheitsabschaltung bei {v} {unit}',
+    safety_shutoff: '🛡 Sicherheitsabschaltung bei 𝚫t {v} {unit}',
     safety_shutoff_none: '🛡 Sicherheitsabschaltung bei —',
     hysteresis_status: '🌡 Hysterese: {v} {unit}',
     status_idle: 'bereit',
@@ -1283,8 +1372,11 @@ export const TRANSLATIONS = Object.freeze({
     delete_from_library_tt: 'Aus Bibliothek löschen',
     save_current_as: 'Aktuelles Rezept speichern unter…',
     recipe_name_placeholder: 'z. B. Helles',
-    save_as: '💾 Speichern unter…',
+    save_as: '💾 Speichern',
     overwrite_confirm: 'Rezept "{name}" existiert bereits. Überschreiben?',
+    new_recipe: 'Neues Rezept',
+    modified_suffix: 'Neu',
+    active_recipe_tt: 'Aktives Rezept',
     sensor_label: 'Temperatursensor',
     heater_label: 'Heizungs-Aktor',
     hysteresis_label: 'Hysterese ({unit}, > 0 bis 5)',
