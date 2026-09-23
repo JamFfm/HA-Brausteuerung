@@ -1,6 +1,6 @@
 {
   "name": "homeassistant-brausteuerung",
-  "version": "2.5.1",
+  "version": "2.6.3",
   "description": "Home Assistant Brausteuerung – Custom Lovelace Card, Helfer und Automationen für die Maischesteuerung",
   "private": true,
   "type": "module",

@@ -95,7 +95,7 @@ nicht auflösen und die Karte bleibt leer.
 Gehe zu **Einstellungen → Dashboards → Ressourcen → Ressource hinzufügen** und
 trage ein:
 
-- **URL:** `/local/brausteuerung-card.js?v=2.5.1`
+- **URL:** `/local/brausteuerung-card.js?v=2.6.3`
 - **Typ:** `JavaScript-Modul` (`module`)
 
 > Das Verzeichnis `<config>/www/` ist in Home Assistant unter dem URL-Pfad
@@ -107,7 +107,7 @@ trage ein:
 > dass der Browser eine neue Card-Version nach einem Update zuverlässig lädt,
 > ohne dass der Cache manuell geleert werden muss (siehe Abschnitt
 > [Updates](#updates)). Die Version sollte mit der Konstante `VERSION` in
-> `brausteuerung-card.js` übereinstimmen (aktuell `2.5.1`).
+> `brausteuerung-card.js` übereinstimmen (aktuell `2.6.3`).
 
 ### 3. Helfer anlegen
 
@@ -121,6 +121,7 @@ Folgende Helfer werden angelegt:
 | Helfer | Domäne | Inhalt |
 |---|---|---|
 | `brau_rezept_json` | `input_text` | Rezept als JSON-Array (max. 255 Zeichen). |
+| `brau_rezept_name` | `input_text` | **Optional.** Name des aktiven Rezepts (Anzeige oben mittig auf der Card). Ist der Helfer nicht angelegt, speichert die Card den Namen im HA-Benutzerspeicher. Kein `initial:` (bleibt erhalten). |
 | `brau_sensor_entity` | `input_text` | Entity-ID des Temperatursensors. |
 | `brau_heater_entity` | `input_text` | Entity-ID des Heizungs-Aktors. |
 | `brau_status` | `input_select` | Betriebszustand: `idle` / `running` / `paused` / `done`. |
@@ -200,7 +201,7 @@ Version der Card-Dateien die **Versionsnummer hochzählen** — an diesen Stelle
 die identisch gehalten werden müssen:
 
 1. In der Lovelace-Ressource die URL anpassen, z. B. von
-   `/local/brausteuerung-card.js?v=2.5.1` auf `?v=2.5.2`
+   `/local/brausteuerung-card.js?v=2.6.3` auf `?v=2.6.4`
    (**Einstellungen → Dashboards → Ressourcen**).
 2. In `www/brausteuerung-card.js` die Konstante `const VERSION = "…"` auf
    denselben Wert setzen. Diese Version wird auch intern an den Import des
@@ -238,6 +239,34 @@ Damit lässt sich die Oberfläche jederzeit zwischen **Englisch** (Standard) und
 gespeichert und gilt auch für die **Benachrichtigungstexte der Automationen**
 (z. B. Übertemperatur, Kommunikationsverlust, Brauende). Fehlt der Helferwert
 oder ist er ungültig, wird Englisch verwendet.
+
+### Name des aktiven Rezepts
+
+In der Kopfzeile der Karte steht **oben in der Mitte fett** der Name des aktuell
+aktiven Rezepts. Gespeichert wird er im **HA-Benutzerspeicher** (wie die
+Rezept-Bibliothek). Zusätzlich schreibt die Karte den Namen in den Helfer
+`input_text.brau_rezept_name`, **sofern dieser angelegt ist** — der Helfer ist
+optional und nur nötig, wenn der Name auch in Home Assistant selbst (z. B. für
+eigene Automationen oder benutzerübergreifend) verfügbar sein soll.
+
+- **Kein Rezept ausgewählt:** Es erscheint der Platzhalter **„Neues Rezept"**
+  (englisch: „New recipe").
+- **Rezept geladen oder gespeichert:** Beim **📥 Laden** aus der Bibliothek und
+  beim **💾 Speichern** übernimmt die Karte den jeweiligen Rezeptnamen.
+- **Rezept verändert:** Wird ein benanntes Rezept angepasst (Rast hinzugefügt,
+  gelöscht, bearbeitet oder umsortiert), hängt die Karte beim **ersten** Eingriff
+  ein **„Neu"** an den Namen, z. B. `Helles` → `Helles Neu`. Alle **weiteren**
+  Änderungen lassen den Namen unverändert — der Name wird also nicht bei jeder
+  Änderung erneut ergänzt.
+- **Namenskollision:** Existiert der Name mit „Neu" bereits in der Bibliothek,
+  wird eine Zahl hochgezählt: `Helles Neu 2`, `Helles Neu 3`, …
+
+Erkannt wird die erste Änderung über den Abgleich mit der Rezept-Bibliothek: Nur
+solange das aktive Rezept namentlich **und** inhaltlich dem gespeicherten
+Bibliothekseintrag entspricht, gilt es als unverändert. Das Verhalten bleibt
+dadurch auch nach einem Neuladen der Seite korrekt. Ein Rezept ohne Namen
+(Platzhalter „Neues Rezept") erhält kein „Neu"-Suffix — vergib beim
+**💾 Speichern** einfach einen Namen.
 
 ### Rezept / Raststufen anlegen
 
@@ -306,7 +335,7 @@ manuell gesetzten Zustand jederzeit gemäß Regelung wieder überschreiben.
 kannst du mehrere benannte Braurezepte in einer **Rezept-Bibliothek** ablegen und
 wiederverwenden:
 
-- **Speichern unter…** — legt das aktuell in der Karte sichtbare (aktive) Rezept
+- **💾 Speichern** — legt das aktuell in der Karte sichtbare (aktive) Rezept
   unter einem frei wählbaren Namen in der Bibliothek ab. Existiert der Name
   bereits, wird vor dem Überschreiben eine Bestätigung abgefragt.
 - **📥 Laden** — lädt ein gespeichertes Rezept als aktives Rezept, sodass es

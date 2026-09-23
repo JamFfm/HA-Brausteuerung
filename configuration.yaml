@@ -19,8 +19,8 @@
 # Deshalb sind die Helfer hier bewusst in zwei Gruppen geteilt:
 #
 #   1) Benutzerdaten / Konfiguration  → OHNE `initial:`  → bleiben erhalten:
-#        brau_rezept_json, brau_sensor_entity, brau_heater_entity,
-#        brau_sicherheits_offset, brau_hysterese
+#        brau_rezept_json, brau_rezept_name, brau_sensor_entity,
+#        brau_heater_entity, brau_sicherheits_offset, brau_hysterese
 #
 #   2) Prozess-/Laufzeitzustand       → MIT `initial:`   → Reset auf sicheren
 #      Ruhezustand bei jedem Neustart (kein automatisches Fortsetzen eines
@@ -37,6 +37,16 @@
 input_text:
   brau_rezept_json:
     name: Brau Rezept JSON
+    max: 255
+
+  # OPTIONAL — Name des aktiven Rezepts (Req 16). Wird in der Kopfzeile der Card
+  # fett und mittig angezeigt; ohne Wert zeigt die Card „Neues Rezept". Die Card
+  # funktioniert auch ohne diesen Helfer (dann liegt der Name im
+  # HA-Benutzerspeicher); mit dem Helfer ist der Name zusätzlich in HA selbst
+  # verfügbar (z. B. für eigene Automationen). Kein `initial:`, damit der Name
+  # Neustarts/Updates überdauert (restore_state).
+  brau_rezept_name:
+    name: Brau Rezept Name
     max: 255
 
   brau_sensor_entity:
