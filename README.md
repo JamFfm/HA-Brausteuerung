@@ -95,7 +95,7 @@ nicht auflösen und die Karte bleibt leer.
 Gehe zu **Einstellungen → Dashboards → Ressourcen → Ressource hinzufügen** und
 trage ein:
 
-- **URL:** `/local/brausteuerung-card.js?v=2.6.3`
+- **URL:** `/local/brausteuerung-card.js?v=2.6.6`
 - **Typ:** `JavaScript-Modul` (`module`)
 
 > Das Verzeichnis `<config>/www/` ist in Home Assistant unter dem URL-Pfad
@@ -107,7 +107,7 @@ trage ein:
 > dass der Browser eine neue Card-Version nach einem Update zuverlässig lädt,
 > ohne dass der Cache manuell geleert werden muss (siehe Abschnitt
 > [Updates](#updates)). Die Version sollte mit der Konstante `VERSION` in
-> `brausteuerung-card.js` übereinstimmen (aktuell `2.6.3`).
+> `brausteuerung-card.js` übereinstimmen (aktuell `2.6.6`).
 
 ### 3. Helfer anlegen
 
