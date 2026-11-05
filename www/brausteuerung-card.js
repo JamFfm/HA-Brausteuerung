@@ -53,7 +53,7 @@ import {
   resolveUnit,
   DEFAULT_GRAPH_HOURS,
   Status,
-} from "./brausteuerung-logic.js?v=2.6.3";
+} from "./brausteuerung-logic.js?v=2.6.6";
 
 // ---------------------------------------------------------------------------
 // Versionierung / Cache-Busting (Req 11.5, 11.6)
@@ -67,7 +67,7 @@ import {
 // Der statische Import-Spezifizierer muss ein String-Literal sein; daher ist
 // die Versionsnummer dort fest eingetragen und MUSS bei einem Update gemeinsam
 // mit VERSION hochgezählt werden.
-const VERSION = "2.6.3";
+const VERSION = "2.6.6";
 
 // LitElement-Basisklasse aus Home Assistant beziehen (kein externes CDN).
 const LitElement = Object.getPrototypeOf(customElements.get("ha-panel-lovelace"));
@@ -164,6 +164,11 @@ class BrausteuerungCard extends LitElement {
     this._graphCardLang = null;
     this._graphCardUnit = null;
     this._graphCardLoading = false;
+    // Gemessene Höhe der Hauptansicht in Pixeln (Req 17): dient als
+    // `min-height` für die Panels „Einstellungen"/„Rezepte verwalten", damit
+    // die Karte beim Umschalten nicht springt. Absichtlich KEINE reaktive
+    // Property — ein Schreiben darf kein Re-Render auslösen (Render-Schleifen).
+    this._mainViewHeight = 0;
   }
 
   setConfig(config) {
@@ -277,6 +282,12 @@ class BrausteuerungCard extends LitElement {
    * @param {Map} changed Geänderte Properties (LitElement).
    */
   updated(changed) {
+    // Höhe der Hauptansicht festhalten (Req 17): Solange kein Panel offen ist,
+    // ist `.view` die Hauptansicht — ihre tatsächliche Höhe wird gemessen und
+    // beim Öffnen eines Panels als `min-height` gesetzt. Gemessen wird nur im
+    // Hauptansicht-Zustand, der Wert landet in einem nicht-reaktiven Feld;
+    // dadurch entsteht kein zusätzliches `requestUpdate` und keine Schleife.
+    this._measureMainViewHeight();
     // Beim ersten verfügbaren `hass` die asynchronen Benutzerdaten nachladen:
     // In `connectedCallback` ist die WebSocket-Verbindung oft noch nicht da
     // (Req 12.8, 13.3, 16.1). Bibliothek UND Name werden benötigt, damit die
@@ -293,6 +304,30 @@ class BrausteuerungCard extends LitElement {
     // Fenster an Sensor/effektive Dauer anpassen (begrenzt bei laufendem
     // Brauvorgang auf den Startzeitpunkt).
     this._syncGraphCard();
+  }
+
+  /**
+   * Misst die Höhe der Hauptansicht und merkt sie für die Panels (Req 17).
+   *
+   * Warum Messen statt fester Pixelhöhe: Die Hauptansicht ist variabel hoch
+   * (Anzahl der Rasten, Fehlermeldung, Countdown, Graph). Eine feste Höhe wäre
+   * entweder zu klein (Abschneiden) oder zu groß (Leerraum). Der gemessene
+   * Wert wird nur als `min-height` auf den Ansichtscontainer gelegt: Ist ein
+   * Panel höher, darf die Karte wachsen (kein Abschneiden, Req 17.3).
+   *
+   * Schleifenfreiheit: Es wird nur gemessen, wenn kein Panel offen ist, und
+   * das Ergebnis liegt in einem nicht-reaktiven Feld. Es wird also nie ein
+   * Re-Render ausgelöst; der Wert wirkt beim nächsten regulären Render, das
+   * ohnehin durch das Öffnen des Panels stattfindet.
+   */
+  _measureMainViewHeight() {
+    if (this._showSettings || this._showLibrary) return;
+    const view = this.renderRoot && this.renderRoot.querySelector
+      ? this.renderRoot.querySelector(".view")
+      : null;
+    if (!view) return;
+    const height = view.offsetHeight;
+    if (height > 0) this._mainViewHeight = height;
   }
 
   /**
@@ -1382,16 +1417,29 @@ class BrausteuerungCard extends LitElement {
         padding: 16px;
       }
       /* Kopfzeile: Titel links, Rezeptname mittig, Aktionen rechts (Req 16.1).
-         Die 1fr-Spalten links/rechts halten den Namen optisch in der Mitte. */
+         Titel und Aktionen nehmen nur ihre natürliche Breite (auto), der
+         flexible Rest geht an die mittlere Spalte mit dem Rezeptnamen
+         (minmax(0, 1fr) erlaubt das Schrumpfen inkl. Ellipsis). Da beide
+         Außenspalten gleich behandelt werden und der Name selbst zentriert
+         ist, bleibt er optisch mittig. */
       .header {
         display: grid;
-        grid-template-columns: 1fr auto 1fr;
+        grid-template-columns: auto minmax(0, 1fr) auto;
         align-items: center;
         gap: 8px;
+      }
+      /* Gemeinsame Schriftgröße für Kartentitel und Rezeptnamen (Req 16.1):
+         explizit 1.5em (der Browser-Default von <h2>), damit der Name genauso
+         groß ist wie „🍺 Brausteuerung" und der Titel unverändert aussieht. */
+      .header h2,
+      .recipe-name {
+        font-size: 1.5em;
+        line-height: 1.2;
       }
       .header h2 {
         margin: 0;
         min-width: 0;
+        white-space: nowrap;
       }
       .recipe-name {
         font-weight: 700;
@@ -1789,6 +1837,16 @@ class BrausteuerungCard extends LitElement {
         font-size: 0.85em;
         color: var(--secondary-text-color);
       }
+      /*
+        Gemeinsamer Container für Hauptansicht und Panels (Req 17). Die
+        gemessene Höhe der Hauptansicht wird als Inline-min-height gesetzt;
+        box-sizing: border-box hält die Messung (offsetHeight) und die
+        gesetzte Höhe deckungsgleich. Kein overflow: hidden, damit höhere
+        Panel-Inhalte sichtbar bleiben (Req 17.3).
+      */
+      .view {
+        box-sizing: border-box;
+      }
     `;
   }
 
@@ -1798,6 +1856,8 @@ class BrausteuerungCard extends LitElement {
     const active = this._currentStep;
     const showStatusMarkers =
       this._status === Status.RUNNING || this._status === Status.PAUSED;
+    // Offenes Panel = „Einstellungen" oder „Rezepte verwalten" (Req 17).
+    const panelOpen = this._showSettings || this._showLibrary;
 
     return html`
       <ha-card>
@@ -1838,15 +1898,29 @@ class BrausteuerungCard extends LitElement {
 
         ${this._renderStatusBlock()}
 
-        ${this._showLibrary
-          ? this._renderLibrary(running)
-          : this._showSettings
-          ? this._renderSettings()
-          : this._renderRecipe(recipe, running, active, showStatusMarkers)}
+        <!--
+          Gemeinsamer Ansichtscontainer (Req 17): Hauptansicht und Panels
+          liegen im selben Container. Bei offenem Panel erhält er die zuvor
+          gemessene Höhe der Hauptansicht als min-height, damit die Karte beim
+          Umschalten nicht springt. min-height statt height, damit höhere
+          Panel-Inhalte nicht abgeschnitten werden (Req 17.3).
+        -->
+        <div
+          class="view"
+          style=${panelOpen && this._mainViewHeight > 0
+            ? `min-height:${this._mainViewHeight}px`
+            : ""}
+        >
+          ${this._showLibrary
+            ? this._renderLibrary(running)
+            : this._showSettings
+            ? this._renderSettings()
+            : this._renderRecipe(recipe, running, active, showStatusMarkers)}
 
-        ${this._showSettings || this._showLibrary ? "" : this._renderControls(recipe, running)}
+          ${panelOpen ? "" : this._renderControls(recipe, running)}
 
-        ${this._showSettings || this._showLibrary ? "" : this._renderGraph()}
+          ${panelOpen ? "" : this._renderGraph()}
+        </div>
 
         ${this._errorMessage
           ? html`<div class="error">${this._errorMessage}</div>`
