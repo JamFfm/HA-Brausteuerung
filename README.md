@@ -1,3 +1,8 @@
+This version ist deprecated
+Have a look at 
+https://github.com/JamFfm/HA-Beer-Brew-Control
+[HA-Beer-Brew-Control](https://github.com/JamFfm/HA-Beer-Brew-Control)
+
 # 🍺 Brausteuerung für Home Assistant
 
 Die Brausteuerung ist eine auf Home Assistant basierende Sudhaus-/Maischesteuerung
